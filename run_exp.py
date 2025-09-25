@@ -1,5 +1,8 @@
 from run_models import ModelKeeper
 from run_metrics import evaluate_one_emb
+from time import time
+from collections import defaultdict
+import pandas as pd
 
 def create_params_grid(fixed_params, variable_params):
     # Создание списка всех гиперпараметров, которые нужно перебрать
@@ -11,10 +14,10 @@ def create_params_grid(fixed_params, variable_params):
 
     return all_hyperparameter_grids
 
-def run_grid_search(all_hyperparameter_grids, 
+def run_grid_search(all_hyperparameter_grids, sample_fractions,
         train_data_in, valid_data_in, test_data_in, targets,
         checkpoints_path,
-        source_features, col_id="customer_id", 
+        source_features, logger,mcc_code_in, term_id_in, tr_type_in, num_epochs=10, col_id="customer_id", 
         target_col='gender', out_prefix=None):
     cur_time = time()
     model_keeper = ModelKeeper()    
@@ -27,46 +30,50 @@ def run_grid_search(all_hyperparameter_grids,
         logger.info(f"Testing parameters: {params}")
         model_keeper.create_datasets(train_data_in, valid_data_in, params, 
                             source_features, col_id=col_id)
-        model_keeper.train_model(params, checkpoints_path=checkpoints_path)
+        model_keeper.train_model(params, mcc_code_in, term_id_in, tr_type_in, num_epochs, checkpoints_path=checkpoints_path)
        
         embs = model_keeper.calc_embs_from_trained(test_data_in, model_out_name="emb")
         all_embs += embs
 
     eval_many_embs(all_embs, targets, 
-        col_id=col_id, target_col=target_col, out_prefix=out_prefix)
+        col_id=col_id, target_col=target_col, out_prefix=out_prefix, 
+                   sample_fractions=sample_fractions)
 
 def eval_many_embs(embs_list, targets, col_id='customer_id', 
-    target_col='gender', out_prefix=None): 
+    target_col='gender', out_prefix=None, sample_fractions=tuple((1/20,))): 
     res_per_sample_frac = defaultdict(list) 
-
+    #print(embs_list)
     for curr_emb in embs_list: 
-        sample_fractions = np.linspace(1/20, 1, 5):
         res = evaluate_one_emb(curr_emb['emb'], targets, 
             sample_fractions=sample_fractions,
             col_id=col_id, target_col=target_col)
     
-        for accuracy, metrics, times in res:
-            metrics_flattened = {f"metric_{k}": round(v, 4) for k, v in metrics.items()}
-            times_flattened = {f"time_{k}": round(v, 4) for k, v in times.items()}
-
+        for i, metrics in enumerate(res):
+            metrics_flattened = {k: round(v, 4) for k, v in metrics.items()}
+            #times_flattened = {f"time_{k}": round(v, 4) for k, v in times.items()}
+            #print({**curr_emb['info']})
+            #print({**metrics_flattened})
+            #print('res_dict', i)
             # Сохранение результатов
             res_dict = {
                 **curr_emb['info'],
-                **metrics_flattened,
-                **times_flattened,
-                "sample_fraction": sample_fraction
+                **metrics_flattened
+                #**times_flattened,
+                #"sample_fraction": sample_fraction
             }
 
-            res_per_sample_frac[sample_fraction].append(res_dict)
+            res_per_sample_frac[metrics['sample_fraction']].append(res_dict)
 
     # Сохранение в CSV
-    for sample_frac, new_result in res_per_sample_frac:
+    for sample_frac, new_result in res_per_sample_frac.items():
+        print(sample_frac)
+        print(new_result)
         new_result = pd.DataFrame(new_result)
 
         # if not os.path.exists(output_csv):  
         #     pd.DataFrame(columns=columns).to_csv(output_csv, mode="w", index=False, header=True)
         output_csv = f"{out_prefix}_{sample_frac:.3f}".rstrip('0').rstrip('.') + ".csv"
 
-        new_result.to_csv(output_csv, mode="w", header=False, index=False)
+        new_result.to_csv(output_csv, mode="w")#, header=False, index=False)
 
-    del metrics, accuracy, new_result
+    #del metrics, accuracy, new_result

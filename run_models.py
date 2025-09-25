@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 from ptls.frames.inference_module import InferenceModuleMultimodal
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 import gc
@@ -8,7 +9,7 @@ import torch
 import pytorch_lightning as pl
 from torch.utils.data.dataloader import DataLoader
 from pytorch_lightning.loggers import TensorBoardLogger
-
+from functools import partial
 from sklearn.model_selection import train_test_split
 
 from ptls.nn import TrxEncoder
@@ -19,8 +20,8 @@ from ptls.frames.coles.split_strategy import SampleSlices
 from ptls.frames.coles.multimodal_dataset import MultiModalDataset
 from ptls.frames.coles.multimodal_dataset import MultiModalIterableDataset
 from ptls.frames.coles.multimodal_dataset import MultiModalSortTimeSeqEncoderContainer
-from ptls.frames.coles.multimodal_inference_dataset import MultiModalInferenceDataset
 from ptls.frames.coles.multimodal_inference_dataset import MultiModalInferenceIterableDataset
+#from ptls.frames.coles.multimodal_inference_dataset import #MultiModalIterableDataset
 from ptls.frames.inference_module import InferenceModuleMultimodal
 from ptls.data_load.iterable_processing import SeqLenFilter
 from ptls.data_load import IterableProcessingDataset
@@ -87,7 +88,7 @@ class ModelKeeper:
             valid_data=valid_data,
         )
 
-    def train_model(self, params, checkpoints_path):
+    def train_model(self, params, mcc_code_in, term_id_in, tr_type_in, num_epochs, checkpoints_path):
         self.params = params        
         self.checkpoints_path = checkpoints_path
 
@@ -112,7 +113,7 @@ class ModelKeeper:
         sourceA_encoder = TrxEncoder(**sourceA_encoder_params)
         sourceB_encoder = TrxEncoder(**sourceB_encoder_params)
         
-        seq_encoder = MultiModalSortTimeSeqEncoderContainer(
+        self.seq_encoder = MultiModalSortTimeSeqEncoderContainer(
             trx_encoders={
                 "sourceA": sourceA_encoder,
                 "sourceB": sourceB_encoder,
@@ -124,7 +125,7 @@ class ModelKeeper:
         )
 
         self.model = CoLESModule(
-            seq_encoder=seq_encoder,
+            seq_encoder=self.seq_encoder,
             optimizer_partial=partial(torch.optim.Adam, lr=self.params["learning_rate"]),
             lr_scheduler_partial=partial(torch.optim.lr_scheduler.StepLR, step_size=10, gamma=0.5),
         )
@@ -139,9 +140,9 @@ class ModelKeeper:
 
         custom_logger = CustomLogger()
         early_stopping_callback = EarlyStopping(
-            monitor="val_loss",
+            monitor="valid/recall_top_k",#"val_loss"
             patience=5,
-            mode="min",
+            mode="max", #"min",
             verbose=True
         )
         # Обучение модели
@@ -153,7 +154,7 @@ class ModelKeeper:
             accelerator="gpu",
             devices=1,
             enable_progress_bar=True,
-            precision=16
+            precision='bf16-mixed'
         )
         self.model.train()
         self.pl_trainer.fit(self.model, self.train_loader)
@@ -172,24 +173,17 @@ class ModelKeeper:
             source_names = ("sourceA", "sourceB")
         )
 
-        inf_test_loader = DataLoader(
-            dataset = inf_test_data,
-            collate_fn = partial(inf_test_data.collate_fn, col_id=self.col_id),
-            shuffle = False,
-            num_workers = 0,
-            batch_size = 8
-        )
         # Обработка чекпоинтов
         checkpoint_files = glob.glob(f"{self.checkpoints_path}/model_{self.params['batch_size']}_{self.params['learning_rate']}_{self.params['split_count']}_{self.params['cnt_min']}_{self.params['cnt_max']}_{self.params['hidden_size']}*.ckpt")
         checkpoint_files.sort()
-        logger.info(f"Elapsed time: {time() - cur_time:.2f} seconds")
+        #logger.info(f"Elapsed time: {time() - cur_time:.2f} seconds")
 
-        logger.info(f'Early stop is {self.early_stop_epoch}')
+        #logger.info(f'Early stop is {self.early_stop_epoch}')
         res = []
-
+        #print(checkpoint_files)
         for i, checkpoint in enumerate(checkpoint_files):
-            logger.info(f"Processing checkpoint number {i}")
-            self.model = CoLESModule.load_from_checkpoint(checkpoint, seq_encoder=seq_encoder)
+            #logger.info(f"Processing checkpoint number {i}")
+            self.model = CoLESModule.load_from_checkpoint(checkpoint, seq_encoder=self.seq_encoder)
 
             # Вычисление метрик и времени
             self.model.eval()
@@ -200,6 +194,13 @@ class ModelKeeper:
                 model_out_name=model_out_name,
                 col_id=self.col_id,
             )
+            inf_test_loader = DataLoader(
+                dataset = inf_test_data,
+                collate_fn = partial(inf_test_data.collate_fn, col_id=self.col_id),
+                shuffle = False,
+                num_workers = 0,
+                batch_size = 8
+                )
             inference_module.model.is_reduce_sequence = True
 
             # Получение эмбеддингов
@@ -207,12 +208,13 @@ class ModelKeeper:
                 self.pl_trainer.predict(inference_module, inf_test_loader),
                 axis=0,
             )
-
-            res.append({"emb": inf_emb_test, "info":{
+            print(inf_test_embeddings.shape)
+            print(np.unique(inf_test_embeddings[self.col_id].unique().shape))
+            res.append({"emb": inf_test_embeddings, "info":{
                     **self.params,
                     "checkpoint": checkpoint,
                     "epoch_num": int(i),
-                    "early_stop_epoch": int(early_stop_epoch)}
+                    "early_stop_epoch": int(self.early_stop_epoch)}
                 })
 
         torch.cuda.empty_cache()
