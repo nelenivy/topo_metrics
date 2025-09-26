@@ -32,7 +32,7 @@ def ripser_metric(embeddings, u=None, s=None):
 
 
 def compute_metrics(embeddings_np, selected_metrics=None, 
-        n_samples=10, sample_fraction=1/20):    
+        n_samples=10, sample_fraction=1/20, verbose=0):    
     sample_size = max(1, int(sample_fraction * embeddings_np.shape[0]))
 
     # Метрики
@@ -83,38 +83,32 @@ def compute_metrics(embeddings_np, selected_metrics=None,
 
         gc.collect()
 
-    #print(1)
     averaged_metrics = {f"metric_{k}": np.mean(v) for k, v in metrics.items()}
-    #print(2)
     std_metrics = {f"std_{k}": np.std(v) / (np.mean(v) + 1e-10) for k, v in metrics.items()}
     
     averaged_times = {f"metric_{k}": np.mean(v) for k, v in times.items()}
     std_times = {k: np.std(v) for k, v in times.items()}
+    
+    if verbose:
+        print("\n📊 Средние значения метрик и время вычисления:")
+        for metric_name in averaged_metrics:
+            metric_value = averaged_metrics[metric_name]
+            metric_time = averaged_times.get(metric_name, None)
+            print(f"🧠 {metric_name:30s} = {metric_value:.4f} | ⏱ {metric_time:.4f} сек")
 
-    print("\n📊 Средние значения метрик и время вычисления:")
-    for metric_name in averaged_metrics:
-        metric_value = averaged_metrics[metric_name]
-        metric_time = averaged_times.get(metric_name, None)
-        print(f"🧠 {metric_name:30s} = {metric_value:.4f} | ⏱ {metric_time:.4f} сек")
-    #print(3)
     averaged_metrics = {**averaged_metrics, **std_metrics}
-    #print(4)
     return averaged_metrics
 
 
 def eval_downstream(inf_test_embeddings, targets, col_id="customer_id", target_col='gender'):
-    #print(targets.shape)
     targets_df = targets.set_index(col_id)
     inf_test_df = inf_test_embeddings.merge(targets_df, how="inner", on=col_id).set_index(col_id)
-    # print(inf_test_embeddings.shape)
-    # print(list(inf_test_df.columns))
 
     X = inf_test_df.drop(columns=[target_col]).values
     y = inf_test_df[target_col].values
-    # print(X)
-    # print(y.mean())
+
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42, stratify=y)
-    # print(X.shape, X_train.shape, X_test.shape)
+
     classifier = catboost.CatBoostClassifier(
         iterations=150,
         random_seed=42,
@@ -122,15 +116,6 @@ def eval_downstream(inf_test_embeddings, targets, col_id="customer_id", target_c
     )
     classifier.fit(X_train, y_train)    
 
-    # Get feature importance scores
-    # feature_importance = classifier.get_feature_importance(Pool(X_train, y_train))
-    # feature_names = inf_test_df.drop(columns=[target_col]).columns
-    
-    # # Create a dataframe to examine
-    # fi_df = pd.DataFrame({"feature": feature_names, "importance": feature_importance})
-    # fi_df = fi_df.sort_values(by="importance", ascending=False)
-    
-    # print(fi_df)
     accuracy = classifier.score(X_test, y_test)
     y_scores = classifier.predict_proba(X_test)
     auc_score = roc_auc_score(y_test, y_scores[:, 1])    
@@ -155,6 +140,5 @@ def evaluate_one_emb(inf_test_embeddings, targets, selected_metrics=None,
         #metrics['times'] = times
         
         res.append(metrics)
-    #print(res)
     
     return res

@@ -16,8 +16,7 @@ def create_params_grid(fixed_params, variable_params):
 
 def run_grid_search(all_hyperparameter_grids, sample_fractions,
         train_data_in, valid_data_in, test_data_in, targets,
-        checkpoints_path,
-        source_features, logger,mcc_code_in, term_id_in, tr_type_in, num_epochs=10, col_id="customer_id", 
+        checkpoints_path, logger,col_id="customer_id", 
         target_col='gender', out_prefix=None):
     cur_time = time()
     model_keeper = ModelKeeper()    
@@ -29,10 +28,10 @@ def run_grid_search(all_hyperparameter_grids, sample_fractions,
         
         logger.info(f"Testing parameters: {params}")
         model_keeper.create_datasets(train_data_in, valid_data_in, params, 
-                            source_features, col_id=col_id)
-        model_keeper.train_model(params, mcc_code_in, term_id_in, tr_type_in, num_epochs, checkpoints_path=checkpoints_path)
+                            col_id=col_id)
+        model_keeper.train_model(params, checkpoints_path=checkpoints_path)
        
-        embs = model_keeper.calc_embs_from_trained(test_data_in, model_out_name="emb")
+        embs = model_keeper.calc_embs_from_trained(test_data_in)
         all_embs += embs
 
     eval_many_embs(all_embs, targets, 
@@ -42,7 +41,7 @@ def run_grid_search(all_hyperparameter_grids, sample_fractions,
 def eval_many_embs(embs_list, targets, col_id='customer_id', 
     target_col='gender', out_prefix=None, sample_fractions=tuple((1/20,))): 
     res_per_sample_frac = defaultdict(list) 
-    #print(embs_list)
+
     for curr_emb in embs_list: 
         res = evaluate_one_emb(curr_emb['emb'], targets, 
             sample_fractions=sample_fractions,
@@ -51,15 +50,11 @@ def eval_many_embs(embs_list, targets, col_id='customer_id',
         for i, metrics in enumerate(res):
             metrics_flattened = {k: round(v, 4) for k, v in metrics.items()}
             #times_flattened = {f"time_{k}": round(v, 4) for k, v in times.items()}
-            #print({**curr_emb['info']})
-            #print({**metrics_flattened})
-            #print('res_dict', i)
             # Сохранение результатов
             res_dict = {
                 **curr_emb['info'],
                 **metrics_flattened
                 #**times_flattened,
-                #"sample_fraction": sample_fraction
             }
 
             res_per_sample_frac[metrics['sample_fraction']].append(res_dict)
@@ -76,4 +71,3 @@ def eval_many_embs(embs_list, targets, col_id='customer_id',
 
         new_result.to_csv(output_csv, mode="w")#, header=False, index=False)
 
-    #del metrics, accuracy, new_result

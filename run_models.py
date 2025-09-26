@@ -53,10 +53,9 @@ class ModelKeeper:
     def __init__(self, **kwargs):
         pass
 
-    def create_datasets(self, train_data_in, valid_data_in, params, 
-                            source_features, col_id="customer_id"):
+    def create_datasets(self, train_data_in, valid_data_in, params, col_id="customer_id"):
         self.col_id = col_id
-        self.source_features = source_features
+        self.source_features = params['source_features']
         splitter = SampleSlices(
             split_count=params["split_count"],
             cnt_min=params["cnt_min"],
@@ -66,7 +65,7 @@ class ModelKeeper:
         train_data = MultiModalIterableDataset(
             data=train_data_in,
             splitter=splitter,
-            source_features=source_features,
+            source_features=self.source_features,
             col_id=col_id,
             col_time="event_time",
             source_names=("sourceA", "sourceB"),
@@ -75,7 +74,7 @@ class ModelKeeper:
         valid_data = MultiModalIterableDataset(
             data=valid_data_in,
             splitter=splitter,
-            source_features=source_features,
+            source_features=self.source_features,
             col_id=col_id,
             col_time="event_time",
             source_names=("sourceA", "sourceB"),
@@ -88,7 +87,7 @@ class ModelKeeper:
             valid_data=valid_data,
         )
 
-    def train_model(self, params, mcc_code_in, term_id_in, tr_type_in, num_epochs, checkpoints_path):
+    def train_model(self, params, num_epochs, checkpoints_path):
         self.params = params        
         self.checkpoints_path = checkpoints_path
 
@@ -96,8 +95,8 @@ class ModelKeeper:
             embeddings_noise=0.003,
             linear_projection_size=64,
             embeddings={
-                "mcc_code": {"in": mcc_code_in, "out": 32},
-                "term_id": {"in": term_id_in, "out": 32},
+                "mcc_code": {"in": params['mcc_code_in'], "out": 32},
+                "term_id": {"in": params['term_id_in'], "out": 32},
             },
         )
         
@@ -105,7 +104,7 @@ class ModelKeeper:
             embeddings_noise=0.003,
             linear_projection_size=64,
             embeddings={
-                "tr_type": {"in": tr_type_in, "out": 32},
+                "tr_type": {"in": params['tr_type_in'], "out": 32},
             },
             numeric_values={"amount": "identity"},
         )
@@ -150,7 +149,7 @@ class ModelKeeper:
             callbacks=[checkpoint_callback, early_stopping_callback, custom_logger],
             default_root_dir=self.checkpoints_path,
             check_val_every_n_epoch=1,
-            max_epochs=num_epochs,
+            max_epochs=params['num_epochs'],
             accelerator="gpu",
             devices=1,
             enable_progress_bar=True,
@@ -162,9 +161,9 @@ class ModelKeeper:
         self.early_stop_epoch = custom_logger.early_stopping_epoch
 
         if self.early_stop_epoch is None:
-            self.early_stop_epoch = num_epochs
+            self.early_stop_epoch = params['num_epochs']
 
-    def calc_embs_from_trained(self, test_data, model_out_name="emb"):
+    def calc_embs_from_trained(self, test_data):
         inf_test_data = MultiModalInferenceIterableDataset(
             data = test_data,
             source_features = self.source_features,
@@ -191,7 +190,7 @@ class ModelKeeper:
                 model=self.model,
                 pandas_output=True,
                 drop_seq_features=True,
-                model_out_name=model_out_name,
+                model_out_name='emb',
                 col_id=self.col_id,
             )
             inf_test_loader = DataLoader(
