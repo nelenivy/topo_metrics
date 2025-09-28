@@ -17,16 +17,30 @@ from metrics import (rankme,
         self_clustering)
 import gc
 from sklearn.metrics import roc_auc_score
+from scipy.spatial.distance import pdist, squareform
+import math
 
 def ripser_metric(embeddings, u=None, s=None):    
     diagrams = rpp.run("--format point-cloud", embeddings)
     persistence = {}
-    persistence["ripser_sum"] = 0
-
+    #persistence["ripser_sum"] = 0
+    # Compute condensed pairwise distances (1D array)
+    distances = pdist(embeddings)
+    # Convert to square distance matrix
+    distance_matrix = squareform(distances).ravel()
+    quants = [0.5, 0.7, 0.8, 0.9, 0.95, 0.99]
+    norms = np.quantile(distance_matrix, quants)
+    
     for k in range(len(diagrams)):
         persistence_sum = sum([death - birth for birth, death in diagrams[k] if death > birth])
         persistence[f"ripser_sum_H{k}"] = persistence_sum
-        persistence["ripser_sum"]+= persistence_sum
+        persistence_sq_sum = sum([(death - birth) ** 2 for birth, death in diagrams[k] if death > birth])
+        persistence[f"ripser_sq_sum_H{k}"] = math.sqrt(persistence_sq_sum)
+        
+        for q, v in zip(quants, norms):
+            persistence[f"ripser_sum_H{k}_norm{q}"] = persistence[f"ripser_sum_H{k}"] / v
+            persistence[f"ripser_sq_sum_H{k}_norm{q}"] = persistence[f"ripser_sq_sum_H{k}"] / v
+        #persistence["ripser_sum"]+= persistence_sum
 
     return persistence
 
@@ -100,7 +114,8 @@ def compute_metrics(embeddings_np, selected_metrics=None,
     return averaged_metrics
 
 
-def eval_downstream(inf_test_embeddings, targets, col_id="customer_id", target_col='gender'):
+def eval_downstream(inf_test_embeddings, targets, col_id="customer_id", 
+                    target_col='gender'):
     targets_df = targets.set_index(col_id)
     inf_test_df = inf_test_embeddings.merge(targets_df, how="inner", on=col_id).set_index(col_id)
 
@@ -125,7 +140,7 @@ def eval_downstream(inf_test_embeddings, targets, col_id="customer_id", target_c
 
 def evaluate_one_emb(inf_test_embeddings, targets, selected_metrics=None, 
         sample_fractions=tuple([1/20]),
-        col_id="customer_id", target_col='gender'):
+        col_id="customer_id", target_col='gender', verbose=0, n_samples=10):
     embeddings_np = inf_test_embeddings.drop(columns=[col_id]).to_numpy(dtype=np.float32)
     accuracy, auc = eval_downstream(inf_test_embeddings, targets, 
         col_id=col_id, target_col=target_col)
@@ -133,7 +148,9 @@ def evaluate_one_emb(inf_test_embeddings, targets, selected_metrics=None,
     res = []
 
     for sample_fraction in sample_fractions:
-        metrics = compute_metrics(embeddings_np, selected_metrics, sample_fraction=sample_fraction)
+        metrics = compute_metrics(embeddings_np, selected_metrics, 
+                                  sample_fraction=sample_fraction, 
+                                  verbose=verbose, n_samples=n_samples)
         metrics['accuracy'] = accuracy
         metrics['roc_auc'] = auc
         metrics['sample_fraction'] = sample_fraction

@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 from ptls.frames.inference_module import InferenceModuleMultimodal
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
-import gc
+
 from time import time
 import glob
 import torch
@@ -33,11 +33,15 @@ class CustomLogger(pl.Callback):
     def __init__(self):
         super().__init__()
         self.early_stopping_epoch = None
-    
+        self.topk_list = []
+        
     def on_train_epoch_end(self, trainer, pl_module):
         train_loss = trainer.callback_metrics.get("train_loss", None)
         val_loss = trainer.callback_metrics.get("val_loss", None)
-        
+        curr_recall_topk = trainer.callback_metrics.get("valid/recall_top_k", None)
+        if curr_recall_topk:
+            curr_recall_topk = curr_recall_topk.cpu().numpy()
+        self.topk_list.append(curr_recall_topk)
         if train_loss is not None and val_loss is not None:
             print(f"Epoch {trainer.current_epoch}: Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
         
@@ -87,24 +91,30 @@ class ModelKeeper:
             valid_data=valid_data,
         )
 
-    def train_model(self, params, num_epochs, checkpoints_path):
+    def curr_checkpoint_name(self):
+        return f"model_{self.params['batch_size']}_{self.params['learning_rate']}" \
+            f"_{self.params['split_count']}_{self.params['cnt_min']}_{self.params['cnt_max']}" \
+            f"_{self.params['hidden_size']}_{self.params['embedding_dim']}" \
+            f"_{self.params['category_embedding_dim']}_{self.params['hidden_size']}"
+    
+    def train_model(self, params, checkpoints_path, recalculate=False):
         self.params = params        
         self.checkpoints_path = checkpoints_path
 
         sourceA_encoder_params = dict(
             embeddings_noise=0.003,
-            linear_projection_size=64,
+            linear_projection_size=params['embedding_dim'],
             embeddings={
-                "mcc_code": {"in": params['mcc_code_in'], "out": 32},
-                "term_id": {"in": params['term_id_in'], "out": 32},
+                "mcc_code": {"in": params['mcc_code_in'], "out": params['category_embedding_dim']},
+                "term_id": {"in": params['term_id_in'], "out": params['category_embedding_dim']},
             },
         )
         
         sourceB_encoder_params = dict(
             embeddings_noise=0.003,
-            linear_projection_size=64,
+            linear_projection_size=params['embedding_dim'],
             embeddings={
-                "tr_type": {"in": params['tr_type_in'], "out": 32},
+                "tr_type": {"in": params['tr_type_in'], "out": params['category_embedding_dim']},
             },
             numeric_values={"amount": "identity"},
         )
@@ -117,7 +127,7 @@ class ModelKeeper:
                 "sourceA": sourceA_encoder,
                 "sourceB": sourceB_encoder,
             },
-            input_size=64,
+            input_size=params['embedding_dim'],
             hidden_size=self.params["hidden_size"],  # Используем только текущее значение hidden_size
             seq_encoder_cls=RnnEncoder,
             type="gru",
@@ -132,7 +142,7 @@ class ModelKeeper:
 
         checkpoint_callback = ModelCheckpoint(
             dirpath=self.checkpoints_path,
-            filename=f"model_{self.params['batch_size']}_{self.params['learning_rate']}_{self.params['split_count']}_{self.params['cnt_min']}_{self.params['cnt_max']}_{self.params['hidden_size']}{{epoch:02d}}",
+            filename=f"{self.curr_checkpoint_name()}{{epoch:02d}}",
             save_top_k=-1,
             every_n_epochs=1,
         )
@@ -146,7 +156,7 @@ class ModelKeeper:
         )
         # Обучение модели
         self.pl_trainer = pl.Trainer(
-            callbacks=[checkpoint_callback, early_stopping_callback, custom_logger],
+            callbacks=[checkpoint_callback, custom_logger], #early_stopping_callback],
             default_root_dir=self.checkpoints_path,
             check_val_every_n_epoch=1,
             max_epochs=params['num_epochs'],
@@ -155,14 +165,22 @@ class ModelKeeper:
             enable_progress_bar=True,
             precision='bf16-mixed'
         )
-        self.model.train()
-        self.pl_trainer.fit(self.model, self.train_loader)
+        print(self.curr_checkpoint_name())
+        checkpoint_files = glob.glob(f"{self.checkpoints_path}/{self.curr_checkpoint_name()}*.ckpt")
+        print(checkpoint_files)
+        self.topk_list = []
+        if (len(checkpoint_files) == 0) or recalculate:
+            self.model.train()
+            self.pl_trainer.fit(self.model, self.train_loader)
 
-        self.early_stop_epoch = custom_logger.early_stopping_epoch
-
-        if self.early_stop_epoch is None:
+            self.early_stop_epoch = custom_logger.early_stopping_epoch
+            self.topk_list = custom_logger.topk_list
+            
+            if self.early_stop_epoch is None:
+                self.early_stop_epoch = params['num_epochs']
+        else:
             self.early_stop_epoch = params['num_epochs']
-
+            
     def calc_embs_from_trained(self, test_data):
         inf_test_data = MultiModalInferenceIterableDataset(
             data = test_data,
@@ -173,7 +191,7 @@ class ModelKeeper:
         )
 
         # Обработка чекпоинтов
-        checkpoint_files = glob.glob(f"{self.checkpoints_path}/model_{self.params['batch_size']}_{self.params['learning_rate']}_{self.params['split_count']}_{self.params['cnt_min']}_{self.params['cnt_max']}_{self.params['hidden_size']}*.ckpt")
+        checkpoint_files = glob.glob(f"{self.checkpoints_path}/{self.curr_checkpoint_name()}*.ckpt")
         checkpoint_files.sort()
         #logger.info(f"Elapsed time: {time() - cur_time:.2f} seconds")
 
@@ -207,17 +225,15 @@ class ModelKeeper:
                 self.pl_trainer.predict(inference_module, inf_test_loader),
                 axis=0,
             )
-            print(inf_test_embeddings.shape)
-            print(np.unique(inf_test_embeddings[self.col_id].unique().shape))
+            #print(inf_test_embeddings.shape)
+            #print(np.unique(inf_test_embeddings[self.col_id].unique().shape))
             res.append({"emb": inf_test_embeddings, "info":{
                     **self.params,
                     "checkpoint": checkpoint,
                     "epoch_num": int(i),
-                    "early_stop_epoch": int(self.early_stop_epoch)}
+                    "early_stop_epoch": int(self.early_stop_epoch),
+                    "recall_topk": self.topk_list[i] if self.topk_list else 0.0}
                 })
-
-        torch.cuda.empty_cache()
-        gc.collect()
         return res
 
 
