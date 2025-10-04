@@ -5,7 +5,23 @@ from collections import defaultdict
 import pandas as pd
 from tqdm import tqdm
 import gc
+import os
 import torch
+
+def clear_checkpoints_dir(checkpoints_path):
+    if not os.path.exists(checkpoints_path):
+        return
+    for f in os.listdir(checkpoints_path):
+        fp = os.path.join(checkpoints_path, f)
+        try:
+            if os.path.isfile(fp):
+                os.remove(fp)
+            elif os.path.isdir(fp):
+                import shutil
+                shutil.rmtree(fp)
+        except Exception as e:
+            print(f"{fp} is not deleted ({e})")
+
 
 def create_params_grid(fixed_params, variable_params):
     # Создание списка всех гиперпараметров, которые нужно перебрать
@@ -36,6 +52,9 @@ def run_grid_search(all_hyperparameter_grids, sample_fractions,
         model_keeper.train_model(params, checkpoints_path=checkpoints_path)
        
         embs = model_keeper.calc_embs_from_trained(test_data_in)
+        
+        clear_checkpoints_dir(checkpoints_path=checkpoints_path)
+        
         all_embs += embs
 
     eval_many_embs(all_embs, targets, 
