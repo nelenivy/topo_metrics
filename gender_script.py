@@ -161,24 +161,24 @@ fixed_params = {
     "mcc_code_in": mcc_code_in,
     "term_id_in": term_id_in,
     "tr_type_in": tr_type_in,
-    "num_epochs": 1,
+    "num_epochs": 30,
     'source_features': source_features,
-    "loss": "BarlowTwinsLoss",
+    "loss": "ContrastiveLoss",
     "rnn_encoder_type": "gru"
 }
 
 # Список гиперпараметров для перебора
 variable_params = {
-    "batch_size": [16, 32, 64, 128, 256][:1],
-    # "learning_rate": [0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05][:1],
-    # "split_count": [3, 5, 7][:1],
-    # "cnt_min": [5, 10, 15, 20],
-    # "cnt_max": [60, 80, 100, 150, 200][:1],
-    # "embedding_dim": [32, 64, 128, 256, 512, 1024][:1],
-    # "category_embedding_dim": [4, 8, 16, 24, 32, 64, 128][:1],
-    # "hidden_size": [64, 128, 256, 512, 1024, 2048, 4096][:1],
-    # "loss": ["BarlowTwinsLoss", "ContrastiveLoss", "VicregLoss", "SoftmaxLoss"][:1],
-    # "rnn_encoder_type": ["gru", "lstm"][:1]
+    "batch_size": [16, 32, 64, 128, 256],
+    "learning_rate": [0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05],
+    "split_count": [3, 5, 7],
+    "cnt_min": [5, 10, 15, 20],
+    "cnt_max": [60, 80, 100, 150, 200],
+    "embedding_dim": [32, 64, 128, 256, 512, 1024],
+    "category_embedding_dim": [4, 8, 16, 24, 32, 64, 128],
+    "hidden_size": [64, 128, 256, 512, 1024, 2048, 4096],
+    "loss": ["BarlowTwinsLoss", "ContrastiveLoss", "VicregLoss", "SoftmaxLoss"],
+    "rnn_encoder_type": ["gru", "lstm"]
 }
 
 all_hyperparameter_grids = create_params_grid(fixed_params, variable_params)
