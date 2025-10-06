@@ -28,6 +28,13 @@ from ptls.data_load import IterableProcessingDataset
 from ptls.data_load.utils import collate_feature_dict
 from ptls.data_load.datasets import MemoryMapDataset
 from ptls.preprocessing import PandasDataPreprocessor
+from ptls.frames.coles.losses import (
+    BarlowTwinsLoss,
+    ContrastiveLoss,
+    VicregLoss,
+    SoftmaxLoss
+)
+from ptls.frames.coles.sampling_strategies import HardNegativePairSelector
 
 class CustomLogger(pl.Callback):
     def __init__(self):
@@ -55,13 +62,33 @@ class DataPrepare:
 
 class ModelKeeper:
     def __init__(self, **kwargs):
-        pass
+        self.losses = {
+            "BarlowTwinsLoss": BarlowTwinsLoss(
+                lambd=0.
+            ),
+            "ContrastiveLoss": ContrastiveLoss(
+                margin=0.5,
+                sampling_strategy=HardNegativePairSelector(neg_count=5)
+            ),
+            "VicregLoss": VicregLoss(
+                sim_coeff = 25,
+                std_coeff = 25,
+                cov_coeff = 1
+            ),
+            "SoftmaxLoss": SoftmaxLoss(
+                temperature=0.07
+            ),
+        }
 
     def create_datasets(self, train_data_in, valid_data_in, params, col_id="customer_id"):
         self.col_id = col_id
         self.source_features = params['source_features']
         splitter = SampleSlices(
-            split_count=params["split_count"],
+            split_count=(
+                2*(params["split_count"] // 2)
+                if params["loss"] in ["BarlowTwinsLoss", "VicregLoss"]
+                else params["split_count"]
+            ),
             cnt_min=params["cnt_min"],
             cnt_max=params["cnt_max"],
         )
@@ -95,7 +122,8 @@ class ModelKeeper:
         return f"model_{self.params['batch_size']}_{self.params['learning_rate']}" \
             f"_{self.params['split_count']}_{self.params['cnt_min']}_{self.params['cnt_max']}" \
             f"_{self.params['hidden_size']}_{self.params['embedding_dim']}" \
-            f"_{self.params['category_embedding_dim']}_{self.params['hidden_size']}"
+            f"_{self.params['category_embedding_dim']}_{self.params['hidden_size']}" \
+            f"_{self.params['loss']}_{self.params['rnn_encoder_type']}"
     
     def train_model(self, params, checkpoints_path, recalculate=False):
         self.params = params        
@@ -130,13 +158,17 @@ class ModelKeeper:
             input_size=params['embedding_dim'],
             hidden_size=self.params["hidden_size"],  # Используем только текущее значение hidden_size
             seq_encoder_cls=RnnEncoder,
-            type="gru",
+            type=params['rnn_encoder_type']
         )
 
         self.model = CoLESModule(
             seq_encoder=self.seq_encoder,
             optimizer_partial=partial(torch.optim.Adam, lr=self.params["learning_rate"]),
             lr_scheduler_partial=partial(torch.optim.lr_scheduler.StepLR, step_size=10, gamma=0.5),
+            loss=self.losses.get(
+                params["loss"],
+                None
+            )
         )
 
 
