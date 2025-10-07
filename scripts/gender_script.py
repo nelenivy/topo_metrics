@@ -189,22 +189,22 @@ fixed_params = {
     "mcc_code_in": mcc_code_in,
     "term_id_in": term_id_in,
     "tr_type_in": tr_type_in,
-    "num_epochs": 1,
+    "num_epochs": 30,
     "loss": DEFAULT_LOSS,
     "rnn_encoder_type": DEFAULT_BACKBONE,
 }
 
 variable_params = {
-    "batch_size": [16, 32],  # , 64, 128, 256],
-    "learning_rate": [0.0001, 0.0005],  # , 0.001, 0.005, 0.01, 0.05],
-    "split_count": [3, 5],  # , 7],
-    "cnt_min": [5, 10],  # , 15, 20],
-    "cnt_max": [60, 80],  # , 100, 150, 200],
-    "embedding_dim": [32],  # , 64, 128, 256, 512, 1024],
-    "category_embedding_dim": [4],  # , 8, 16, 24, 32, 64, 128],
-    "hidden_size": [64],  # , 128, 256, 512, 1024, 2048, 4096],
-    "loss": ["BarlowTwinsLoss"], # , "ContrastiveLoss", "VicregLoss", "SoftmaxLoss"],
-    "rnn_encoder_type": ["gru"],  # , "lstm"],
+    "batch_size": [16, 32, 64, 128, 256],
+    "learning_rate": [0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05],
+    "split_count": [3, 5, 7],
+    "cnt_min": [5, 10, 15, 20],
+    "cnt_max": [60, 80, 100, 150, 200],
+    "embedding_dim": [32, 64, 128, 256, 512, 1024],
+    "category_embedding_dim": [4, 8, 16, 24, 32, 64, 128],
+    "hidden_size": [64, 128, 256, 512, 1024, 2048, 4096],
+    "loss": ["BarlowTwinsLoss" "ContrastiveLoss", "VicregLoss", "SoftmaxLoss"],
+    "rnn_encoder_type": ["gru", "lstm"],
 }
 
 all_hyperparameter_grids = create_full_params_grid(
