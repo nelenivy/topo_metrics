@@ -30,7 +30,7 @@ DEFAULT_DOWNSTREAM = "catboost"
 DEFAULT_BACKBONE = "gru"
 
 # [0], [1], 0, 1
-DEVICES = [0]
+DEVICES = [1]
 
 now = f"{datetime.datetime.now()}"
 
@@ -72,18 +72,25 @@ logger.info("🔧 Логгер настроен вручную")
 
 
 def tr_datetime_preprocess(tr_datetime: str) -> int:
-    """Преобразует строку с датой-транзакцией в секунды."""
     days, hms = tr_datetime.split()
+    
     hh, mm, ss = hms.split(":")
-    seconds = datetime.timedelta(hours=int(hh), minutes=int(
-        mm), seconds=int(ss)).total_seconds()
+    
+    seconds = datetime.timedelta(
+        hours=int(hh),
+        minutes=int(mm),
+        seconds=int(ss)
+    ).total_seconds()
+    
     seconds += int(days) * 24 * 3600
+    
     return int(seconds)
 
 
 # -----------------------------------
 # Загрузка данных
 # -----------------------------------
+
 
 transactions = pd.read_csv(
     "https://huggingface.co/datasets/dllllb/transactions-gender/resolve/main/transactions.csv.gz?download=true",
@@ -93,7 +100,7 @@ targets = pd.read_csv(
     "https://huggingface.co/datasets/dllllb/transactions-gender/resolve/main/gender_train.csv?download=true"
 )
 
-transactions = transactions.dropna().reset_index(drop=True).iloc[:100000]
+transactions = transactions.dropna().reset_index(drop=True)
 
 
 # -----------------------------------
@@ -178,14 +185,14 @@ test_dict = test_df.to_dict("records")
 
 
 fixed_params = {
-    "batch_size": 64,
+    "batch_size": 128,
     "learning_rate": 0.001,
     "split_count": 3,
     "cnt_min": 10,
     "cnt_max": 100,
     "embedding_dim": 32,
-    "category_embedding_dim": 8,
-    "hidden_size": 128,
+    "category_embedding_dim": 16,
+    "hidden_size": 256,
     "mcc_code_in": mcc_code_in,
     "term_id_in": term_id_in,
     "tr_type_in": tr_type_in,
@@ -207,8 +214,9 @@ variable_params = {
     "rnn_encoder_type": ["gru", "lstm"],
 }
 
-all_hyperparameter_grids = create_full_params_grid(
-    fixed_params, variable_params)
+all_hyperparameter_grids = create_truncated_params_grid(
+    fixed_params, variable_params
+)
 
 
 # -----------------------------------

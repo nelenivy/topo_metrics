@@ -15,8 +15,11 @@ from sklearn.model_selection import train_test_split
 from sklearn.neural_network import MLPClassifier
 from sklearn.utils import resample
 
-sys.path.append("/home/dpetrovitch/dzagcoffee/topo_metrics/google-research/graph_embedding/metrics")
-from metrics import ( # type: ignore
+sys.path.append(
+    "/home/dpetrovitch/dzagcoffee/topo_metrics/google-research/graph_embedding/metrics"
+)
+
+from metrics import (  # type: ignore
     rankme,
     coherence,
     pseudo_condition_number,
@@ -27,28 +30,44 @@ from metrics import ( # type: ignore
 )
 
 
-def ripser_metric(embeddings, u=None, s=None):
+def ripser_metric(
+    embeddings: np.ndarray,
+    u: np.ndarray | None = None,
+    s: np.ndarray | None = None
+) -> Dict[str, float]:
     diagrams = rpp.run("--format point-cloud", embeddings)
     persistence = {}
+
     # persistence["ripser_sum"] = 0
     # Compute condensed pairwise distances (1D array)
+
     distances = pdist(embeddings)
+
     # Convert to square distance matrix
+
     distance_matrix = squareform(distances).ravel()
     quants = [0.5, 0.7, 0.8, 0.9, 0.95, 0.99]
     norms = np.quantile(distance_matrix, quants)
 
     for k in range(len(diagrams)):
-        persistence_sum = sum(
-            [death - birth for birth, death in diagrams[k] if death > birth])
+        persistence_sum = sum([
+            death - birth
+            for birth, death in diagrams[k]
+            if death > birth
+        ])
         persistence[f"ripser_sum_H{k}"] = persistence_sum
-        persistence_sq_sum = sum(
-            [(death - birth) ** 2 for birth, death in diagrams[k] if death > birth])
+
+        persistence_sq_sum = sum([
+            (death - birth) ** 2
+            for birth, death in diagrams[k]
+            if death > birth
+        ])
         persistence[f"ripser_sq_sum_H{k}"] = math.sqrt(persistence_sq_sum)
 
         for q, v in zip(quants, norms):
             persistence[f"ripser_sum_H{k}_norm{q}"] = persistence[f"ripser_sum_H{k}"] / v
             persistence[f"ripser_sq_sum_H{k}_norm{q}"] = persistence[f"ripser_sq_sum_H{k}"] / v
+
         # persistence["ripser_sum"]+= persistence_sum
 
     return persistence
@@ -61,9 +80,9 @@ def compute_metrics(
     sample_fraction: float = 1 / 20,
     verbose: int = 0
 ) -> Dict[str, float]:
-    
+
     print(embeddings.shape)
-    
+
     available_metrics = {
         "rankme": rankme,
         "coherence": coherence,
@@ -174,7 +193,7 @@ def evaluate_one_emb(
     embeddings_np = inf_test_embeddings.drop(
         columns=[col_id]
     ).to_numpy(dtype=np.float32)
-    
+
     accuracy, auc = eval_downstream(
         inf_test_embeddings, targets, col_id, target_col, downstream_type
     )
