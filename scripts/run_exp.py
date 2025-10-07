@@ -6,6 +6,7 @@ import pandas as pd
 
 from time import time
 from tqdm import tqdm
+from itertools import product
 from collections import defaultdict
 from typing import Dict, Any, List, Tuple
 
@@ -28,7 +29,7 @@ def clear_checkpoints_dir(checkpoints_path: str) -> None:
             print(f"Не удалось удалить {path}: {e}")
 
 
-def create_params_grid(
+def create_truncated_params_grid(
     fixed_params: Dict[str, Any],
     variable_params: Dict[str, List[Any]]
 ) -> List[Tuple[str, Dict[str, Any]]]:
@@ -37,6 +38,26 @@ def create_params_grid(
         for value in values:
             grid = {**fixed_params, param_name: value}
             grids.append((param_name, grid))
+    return grids
+
+
+def create_full_params_grid(
+    fixed_params: Dict[str, Any],
+    variable_params: Dict[str, List[Any]]
+) -> List[Tuple[str, Dict[str, Any]]]:
+    if not variable_params:
+        return [("none", fixed_params.copy())]
+
+    param_names = list(variable_params.keys())
+    all_combinations = product(
+        *(variable_params[name] for name in param_names)
+    )
+
+    grids = []
+    for combination in all_combinations:
+        grid = {**fixed_params, **dict(zip(param_names, combination))}
+        grids.append((", ".join(param_names), grid))
+
     return grids
 
 

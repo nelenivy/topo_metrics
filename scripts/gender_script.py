@@ -8,7 +8,11 @@ import torch
 
 from sklearn.model_selection import train_test_split
 from ptls.preprocessing import PandasDataPreprocessor
-from run_exp import create_params_grid, run_grid_search
+from run_exp import (
+    create_truncated_params_grid,
+    create_full_params_grid,
+    run_grid_search
+)
 
 
 # -----------------------------------
@@ -25,12 +29,16 @@ DEFAULT_DOWNSTREAM = "catboost"
 # "lstm" | "gru"
 DEFAULT_BACKBONE = "gru"
 
+# [0], [1], 0, 1
+DEVICES = [0]
+
 now = f"{datetime.datetime.now()}"
 
-sys.path.append("/home/dpetrovitch/dzagcoffee/topo_metrics/google-research")
+prefix = "/home/dpetrovitch/dzagcoffee"
+postfix = f"{now}_{DEFAULT_LOSS}_{DEFAULT_BACKBONE}_{DEFAULT_DOWNSTREAM}"
 
-checkpoints_path = f"../train_trace/gender/checkpoints_{now}"
-logs_dir = f"../train_trace/logs/gender_{now}_{DEFAULT_LOSS}_{DEFAULT_BACKBONE}_{DEFAULT_DOWNSTREAM}"
+checkpoints_path = f"{prefix}/train_trace/gender/checkpoints_{postfix}"
+logs_dir = f"{prefix}/train_trace/logs/gender_{postfix}"
 
 os.makedirs(checkpoints_path, exist_ok=True)
 os.makedirs(logs_dir, exist_ok=True)
@@ -85,7 +93,7 @@ targets = pd.read_csv(
     "https://huggingface.co/datasets/dllllb/transactions-gender/resolve/main/gender_train.csv?download=true"
 )
 
-transactions = transactions.dropna().reset_index(drop=True)
+transactions = transactions.dropna().reset_index(drop=True).iloc[:100000]
 
 
 # -----------------------------------
@@ -111,7 +119,8 @@ print("tr_type_in:", tr_type_in)
 
 
 transactions["tr_datetime"] = transactions["tr_datetime"].apply(
-    tr_datetime_preprocess)
+    tr_datetime_preprocess
+)
 
 
 # -----------------------------------
@@ -141,9 +150,11 @@ transactions = transactions.map(
 
 
 train_df, test_df = train_test_split(
-    transactions, test_size=0.1, random_state=42)
+    transactions, test_size=0.1, random_state=42
+)
 train_df, valid_df = train_test_split(
-    transactions, test_size=0.1, random_state=42)
+    transactions, test_size=0.1, random_state=42
+)
 
 
 print(train_df.index.intersection(test_df.index))
@@ -184,19 +195,20 @@ fixed_params = {
 }
 
 variable_params = {
-    "batch_size": [16, 32, 64, 128, 256],
-    "learning_rate": [0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05],
-    "split_count": [3, 5, 7],
-    "cnt_min": [5, 10, 15, 20],
-    "cnt_max": [60, 80, 100, 150, 200],
-    "embedding_dim": [32, 64, 128, 256, 512, 1024],
-    "category_embedding_dim": [4, 8, 16, 24, 32, 64, 128],
-    "hidden_size": [64, 128, 256, 512, 1024, 2048, 4096],
-    "loss": ["BarlowTwinsLoss", "ContrastiveLoss", "VicregLoss", "SoftmaxLoss"],
-    "rnn_encoder_type": ["gru", "lstm"],
+    "batch_size": [16, 32],  # , 64, 128, 256],
+    "learning_rate": [0.0001, 0.0005],  # , 0.001, 0.005, 0.01, 0.05],
+    "split_count": [3, 5],  # , 7],
+    "cnt_min": [5, 10],  # , 15, 20],
+    "cnt_max": [60, 80],  # , 100, 150, 200],
+    "embedding_dim": [32],  # , 64, 128, 256, 512, 1024],
+    "category_embedding_dim": [4],  # , 8, 16, 24, 32, 64, 128],
+    "hidden_size": [64],  # , 128, 256, 512, 1024, 2048, 4096],
+    "loss": ["BarlowTwinsLoss"], # , "ContrastiveLoss", "VicregLoss", "SoftmaxLoss"],
+    "rnn_encoder_type": ["gru"],  # , "lstm"],
 }
 
-all_hyperparameter_grids = create_params_grid(fixed_params, variable_params)
+all_hyperparameter_grids = create_full_params_grid(
+    fixed_params, variable_params)
 
 
 # -----------------------------------
@@ -204,7 +216,7 @@ all_hyperparameter_grids = create_params_grid(fixed_params, variable_params)
 # -----------------------------------
 
 
-out_folder = f"/home/dpetrovitch/dzagcoffee/outputs/output_{now}_{DEFAULT_LOSS}_{DEFAULT_BACKBONE}_{DEFAULT_DOWNSTREAM}"
+out_folder = f"{prefix}/outputs/output_{postfix}"
 out_prefix = os.path.join(out_folder, "out")
 
 os.makedirs(out_folder, exist_ok=True)
@@ -226,5 +238,5 @@ run_grid_search(
     verbose=0,
     n_samples=1,
     downstream_type=DEFAULT_DOWNSTREAM,
-    devices=[1],
+    devices=DEVICES,
 )
