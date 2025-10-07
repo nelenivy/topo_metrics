@@ -125,7 +125,7 @@ class ModelKeeper:
             f"_{self.params['category_embedding_dim']}_{self.params['hidden_size']}" \
             f"_{self.params['loss']}_{self.params['rnn_encoder_type']}"
     
-    def train_model(self, params, checkpoints_path, recalculate=False):
+    def train_model(self, params, checkpoints_path, recalculate=False, devices=0):
         self.params = params        
         self.checkpoints_path = checkpoints_path
 
@@ -193,7 +193,7 @@ class ModelKeeper:
             check_val_every_n_epoch=1,
             max_epochs=params['num_epochs'],
             accelerator="gpu",
-            devices=1,
+            devices=devices,
             enable_progress_bar=True,
             precision='bf16-mixed'
         )

@@ -40,7 +40,7 @@ def run_grid_search(all_hyperparameter_grids, sample_fractions,
                     train_data_in, valid_data_in, test_data_in, targets,
                     checkpoints_path, logger, col_id="customer_id",
                     target_col='gender', out_prefix=None, verbose=0,
-                    n_samples=10, downstream_type="catboost"):
+                    n_samples=10, downstream_type="catboost", devices=0):
     cur_time = time()
     all_embs = []
 
@@ -53,7 +53,7 @@ def run_grid_search(all_hyperparameter_grids, sample_fractions,
         logger.info(f"Testing parameters: {params}")
         model_keeper.create_datasets(train_data_in, valid_data_in, params,
                                      col_id=col_id)
-        model_keeper.train_model(params, checkpoints_path=checkpoints_path)
+        model_keeper.train_model(params, checkpoints_path=checkpoints_path, devices=devices)
 
         embs = model_keeper.calc_embs_from_trained(test_data_in)
 
