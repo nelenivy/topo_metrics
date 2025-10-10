@@ -10,8 +10,22 @@ from itertools import product
 from collections import defaultdict
 from typing import Dict, Any, List, Tuple
 
-from run_models import ModelKeeper
-from run_metrics import evaluate_one_emb
+from run_models_age_pred import ModelKeeper
+from run_metrics_age_pred import evaluate_one_emb
+import json
+
+
+def embeddings_cache_path(checkpoints_path: str, hyperparams: Dict[str, Any]) -> str:
+    key = (
+        f"{hyperparams['loss']}_{hyperparams['rnn_encoder_type']}"
+        f"_bs{hyperparams['batch_size']}_lr{hyperparams['learning_rate']}"
+        f"_hid{hyperparams['hidden_size']}_emb{hyperparams['embedding_dim']}"
+        f"_cat{hyperparams['category_embedding_dim']}_split{hyperparams['split_count']}"
+        f"_cnt{hyperparams['cnt_min']}-{hyperparams['cnt_max']}"
+    )
+    filename = f"cached_embs_{key}.pkl"
+    
+    return os.path.join(checkpoints_path, filename)
 
 
 def clear_checkpoints_dir(checkpoints_path: str) -> None:
@@ -69,6 +83,7 @@ def run_grid_search(
     test_data_in: pd.DataFrame,
     targets: pd.DataFrame,
     checkpoints_path: str,
+    cache_dir:str,
     logger,
     col_id: str = "customer_id",
     target_col: str = "gender",
@@ -76,15 +91,24 @@ def run_grid_search(
     verbose: int = 0,
     n_samples: int = 10,
     downstream_type: str = "catboost",
-    devices: int | str = 0
+    devices: int | list = 0
 ) -> None:
     start_time = time()
     all_embeddings = []
 
-    for param_name, params in tqdm(all_hyperparameter_grids, desc="Grid search"):
-        logger.info(f"Тестируем: изменяется только {param_name}")
-        logger.info(f"Параметры: {params}")
+    for hyperparam_name, hyperparams in tqdm(all_hyperparameter_grids, desc="Grid search"):
+        logger.info(f"Тестируем: изменяется только {hyperparam_name}")
+        logger.info(f"Параметры: {hyperparams}")
 
+        cache_file = embeddings_cache_path(cache_dir, hyperparams)
+        
+        if os.path.exists(cache_file + ".gz"):
+            logger.info(f"Пропускаем обучение — найден кэш эмбеддингов: {cache_file}")
+            embs = pd.read_pickle(cache_file + ".gz", compression="gzip")
+            all_embeddings.extend(embs)
+            
+            continue
+        
         torch.cuda.empty_cache()
         gc.collect()
 
@@ -92,17 +116,23 @@ def run_grid_search(
         model_keeper.create_datasets(
             train_data_in=train_data_in,
             valid_data_in=valid_data_in,
-            params=params,
+            hyperparams=hyperparams,
             col_id=col_id
         )
         model_keeper.train_model(
-            params=params,
+            hyperparams=hyperparams,
             checkpoints_path=checkpoints_path,
             devices=devices
         )
 
         embs = model_keeper.calc_embs_from_trained(test_data_in)
         all_embeddings.extend(embs)
+        
+        try:
+            pd.to_pickle(embs, cache_file + ".gz", compression="gzip")
+            logger.info(f"Эмбеддинги сохранены в кэш: {cache_file}")
+        except Exception as e:
+            logger.warning(f"Не удалось сохранить эмбеддинги: {e}")
 
         clear_checkpoints_dir(checkpoints_path)
 
@@ -126,8 +156,8 @@ def run_grid_search(
 def eval_many_embs(
     embs_list: List[Dict[str, Any]],
     targets: pd.DataFrame,
-    col_id: str = "customer_id",
-    target_col: str = "gender",
+    col_id: str = "client_id",
+    target_col: str = "bins",
     out_prefix: str | None = None,
     sample_fractions: Tuple[float, ...] = (1 / 20,),
     verbose: int = 0,

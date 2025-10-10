@@ -41,7 +41,8 @@ class CustomLogger(pl.Callback):
         self.topk_list.append(curr_recall_topk)
         if train_loss is not None and val_loss is not None:
             print(
-                f"Epoch {trainer.current_epoch}: Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+                f"Epoch {trainer.current_epoch}: Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}"
+            )
 
         # Если валидационный лосс увеличивается - фиксируем эпоху остановки
         if trainer.early_stopping_callback is not None and trainer.early_stopping_callback.wait_count == 0:
@@ -57,7 +58,7 @@ class ModelKeeper:
     def __init__(self, **kwargs):
         self.losses = {
             "BarlowTwinsLoss": BarlowTwinsLoss(
-                lambd=0.
+                lambd=0.001
             ),
             "ContrastiveLoss": ContrastiveLoss(
                 margin=0.5,
@@ -73,17 +74,17 @@ class ModelKeeper:
             ),
         }
 
-    def create_datasets(self, train_data_in, valid_data_in, params, col_id="customer_id"):
+    def create_datasets(self, train_data_in, valid_data_in, hyperparams, col_id="client_id"):
         self.col_id = col_id
 
         splitter = SampleSlices(
             split_count=(
-                2*(params["split_count"] // 2)
-                if params["loss"] in ["BarlowTwinsLoss", "VicregLoss"]
-                else params["split_count"]
+                2*(hyperparams["split_count"] // 2)
+                if hyperparams["loss"] in ["BarlowTwinsLoss", "VicregLoss"]
+                else hyperparams["split_count"]
             ),
-            cnt_min=params["cnt_min"],
-            cnt_max=params["cnt_max"],
+            cnt_min=hyperparams["cnt_min"],
+            cnt_max=hyperparams["cnt_max"],
         )
 
         train_data = ColesDataset(
@@ -104,58 +105,51 @@ class ModelKeeper:
 
         self.train_loader = PtlsDataModule(
             train_data=train_data,
-            train_batch_size=params["batch_size"],
+            train_batch_size=hyperparams["batch_size"],
             train_num_workers=0,
-            valid_data=valid_data,
+            valid_data=valid_data
         )
 
     def curr_checkpoint_name(self):
-        return f"model_{self.params['batch_size']}_{self.params['learning_rate']}" \
-            f"_{self.params['split_count']}_{self.params['cnt_min']}_{self.params['cnt_max']}" \
-            f"_{self.params['hidden_size']}_{self.params['embedding_dim']}" \
-            f"_{self.params['category_embedding_dim']}_{self.params['hidden_size']}" \
-            f"_{self.params['loss']}_{self.params['rnn_encoder_type']}"
+        return f"model_{self.hyperparams['batch_size']}_{self.hyperparams['learning_rate']}" \
+            f"_{self.hyperparams['split_count']}_{self.hyperparams['cnt_min']}_{self.hyperparams['cnt_max']}" \
+            f"_{self.hyperparams['hidden_size']}_{self.hyperparams['embedding_dim']}" \
+            f"_{self.hyperparams['category_embedding_dim']}_{self.hyperparams['loss']}" \
+            f"_{self.hyperparams['rnn_encoder_type']}"
 
-    def train_model(self, params, checkpoints_path, recalculate=False, devices=0):
-        self.params = params
+    def train_model(self, hyperparams, checkpoints_path, recalculate=False, devices=0):
+        self.hyperparams = hyperparams
         self.checkpoints_path = checkpoints_path
 
         trx_encoder_params = dict(
             embeddings_noise=0.003,
-            linear_projection_size=params['embedding_dim'],
+            numeric_values={"amount_rur": "identity"},
             embeddings={
-                "mcc_code": {
-                    "in": params['mcc_code_in'],
-                    "out": params['category_embedding_dim']
+                "trans_date": {
+                    "in": 800,
+                    "out": 16
                 },
-                "term_id": {
-                    "in": params['term_id_in'],
-                    "out": params['category_embedding_dim']
-                },
-                "tr_type": {
-                    "in": params['tr_type_in'],
-                    "out": params['category_embedding_dim']
+                "small_group": {
+                    "in": 250,
+                    "out": 16
                 },
             },
-            numeric_values={"amount": "identity"},
         )
 
         trx_encoder = TrxEncoder(**trx_encoder_params)
 
         self.seq_encoder = RnnSeqEncoder(
             trx_encoder=trx_encoder,
-            input_size=params['embedding_dim'],
-
             # Используем только текущее значение hidden_size
-            hidden_size=self.params["hidden_size"],
-            type=params['rnn_encoder_type']
+            hidden_size=self.hyperparams["hidden_size"],
+            type=hyperparams['rnn_encoder_type']
         )
 
         self.model = CoLESModule(
             seq_encoder=self.seq_encoder,
             optimizer_partial=partial(
                 torch.optim.Adam,
-                lr=self.params["learning_rate"]
+                lr=self.hyperparams["learning_rate"]
             ),
             lr_scheduler_partial=partial(
                 torch.optim.lr_scheduler.StepLR,
@@ -163,7 +157,7 @@ class ModelKeeper:
                 gamma=0.5
             ),
             loss=self.losses.get(
-                params["loss"],
+                hyperparams["loss"],
                 None
             )
         )
@@ -185,19 +179,17 @@ class ModelKeeper:
             ],
             default_root_dir=self.checkpoints_path,
             check_val_every_n_epoch=1,
-            max_epochs=params['num_epochs'],
+            max_epochs=hyperparams['num_epochs'],
             accelerator="gpu",
             devices=devices,
             enable_progress_bar=True
         )
 
-        print(self.curr_checkpoint_name())
+        # print(self.curr_checkpoint_name())
 
         checkpoint_files = glob.glob(
             f"{self.checkpoints_path}/{self.curr_checkpoint_name()}*.ckpt"
         )
-
-        print(checkpoint_files)
 
         self.topk_list = []
 
@@ -209,10 +201,10 @@ class ModelKeeper:
             self.topk_list = custom_logger.topk_list
 
             if self.early_stop_epoch is None:
-                self.early_stop_epoch = params['num_epochs']
+                self.early_stop_epoch = hyperparams['num_epochs']
 
         else:
-            self.early_stop_epoch = params['num_epochs']
+            self.early_stop_epoch = hyperparams['num_epochs']
 
     def calc_embs_from_trained(self, test_data):
         inference_dataset = MemoryMapDataset(
@@ -254,10 +246,10 @@ class ModelKeeper:
                 axis=0,
             )
 
-            print(len(inf_test_embeddings))
+            print("len of inf_test_embeddings:", len(inf_test_embeddings))
 
             res.append({"emb": inf_test_embeddings, "info": {
-                **self.params,
+                **self.hyperparams,
                 "checkpoint": checkpoint,
                 "epoch_num": int(i),
                 "early_stop_epoch": int(self.early_stop_epoch),

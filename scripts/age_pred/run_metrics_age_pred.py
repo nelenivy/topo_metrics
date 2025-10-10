@@ -13,6 +13,8 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, roc_auc_score
 from sklearn.model_selection import train_test_split
 from sklearn.neural_network import MLPClassifier
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 from sklearn.utils import resample
 
 sys.path.append(
@@ -80,9 +82,6 @@ def compute_metrics(
     sample_fraction: float = 1 / 20,
     verbose: int = 0
 ) -> Dict[str, float]:
-
-    print(embeddings.shape)
-
     available_metrics = {
         "rankme": rankme,
         "coherence": coherence,
@@ -162,21 +161,36 @@ def eval_downstream(
 
     if downstream_type == "catboost":
         model = catboost.CatBoostClassifier(
-            iterations=150, random_seed=42, verbose=0)
+            iterations=150,
+            loss_function='MultiClass',
+            random_seed=42,
+            verbose=0
+        )
     elif downstream_type == "mlp":
-        model = MLPClassifier(hidden_layer_sizes=(
-            128, 64), max_iter=300, random_state=42)
-    elif downstream_type == "logreg":
-        model = LogisticRegression(
-            max_iter=1000, solver="lbfgs", random_state=42)
+        model = make_pipeline(
+            StandardScaler(),
+            MLPClassifier(
+                hidden_layer_sizes=(128, 64),
+                activation="relu",
+                solver="adam",
+                max_iter=300,
+                random_state=42
+            )
+        )
+    # elif downstream_type == "logreg":
+    #     model = LogisticRegression(
+    #         max_iter=1000, solver="lbfgs", random_state=42)
     else:
         raise ValueError(f"Неизвестный тип модели: {downstream_type}")
 
     model.fit(X_train, y_train)
     y_pred = model.predict(X_test)
-    y_proba = model.predict_proba(X_test)[:, 1]
+    y_proba = model.predict_proba(X_test)
 
-    return accuracy_score(y_test, y_pred), roc_auc_score(y_test, y_proba)
+    return (
+        accuracy_score(y_test, y_pred),
+        roc_auc_score(y_test, y_proba, multi_class="ovo", average="macro")
+    )
 
 
 def evaluate_one_emb(
@@ -184,8 +198,8 @@ def evaluate_one_emb(
     targets: pd.DataFrame,
     selected_metrics: Optional[List[str]] = None,
     sample_fractions: Tuple[float, ...] = (1 / 20,),
-    col_id: str = "customer_id",
-    target_col: str = "gender",
+    col_id: str = "client_id",
+    target_col: str = "bins",
     verbose: int = 0,
     n_samples: int = 10,
     downstream_type: str = "catboost"
