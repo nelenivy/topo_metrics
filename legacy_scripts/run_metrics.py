@@ -38,18 +38,19 @@ def ripser_metric(embeddings, u=None, s=None):
     mean_nearest_dist = sorted_rows[:, 10].mean()
     mean_largest_dist = sorted_rows[:, -10].mean()
     distances_arr = distance_matrix.ravel()
-    quants = [0.5, 0.7, 0.8, 0.9, 0.95, 0.99, 'mean_10', "mean_last_10"]
+    quants = [0.5, 0.7, 0.8, 0.9, 0.95, 0.99]
     norms = list(np.quantile(distances_arr, quants)) + [mean_nearest_dist, mean_largest_dist]
+    quants += ['mean_10', "mean_last_10"]
     
     for k in range(len(diagrams)):
         pers_lens = [death - birth for birth, death in diagrams[k] if death > birth]
         persistence_sum = sum(pers_lens)
         persistence[f"ripser_sum_H{k}"] = persistence_sum
         persistence_sq_sum = sum([l ** 2 for l in pers_lens])
-        persistence[f"ripser_log_sum{k}"] = sum([np.log(l) for l in pers_lens])
+        persistence[f"ripser_log_sum{k}"] = sum([np.log(1.0 + l) for l in pers_lens])
         persistence[f"ripser_norm_sum{k}"] = sum([(death - birth) / (death + birth)
                                     for birth, death in diagrams[k] if death > birth])
-        persistence[f"ripser_log_sum_norm{k}"] = sum([np.log((death - birth) / (death + birth))
+        persistence[f"ripser_log_sum_norm{k}"] = sum([np.log(1.0 + (death - birth) / (death + birth))
                                     for birth, death in diagrams[k] if death > birth])
         
         persistence[f"ripser_sq_sum_H{k}"] = math.sqrt(persistence_sq_sum)
@@ -57,7 +58,7 @@ def ripser_metric(embeddings, u=None, s=None):
         for q, v in zip(quants, norms):
             persistence[f"ripser_sum_H{k}_norm{q}"] = persistence[f"ripser_sum_H{k}"] / v
             persistence[f"ripser_sq_sum_H{k}_norm{q}"] = persistence[f"ripser_sq_sum_H{k}"] / v
-            persistence[f"ripser_log_sum{k}_norm{q}"] = persistence[f"ripser_log_sum{k}"] / np.log(v)
+            persistence[f"ripser_log_sum{k}_norm{q}"] = persistence[f"ripser_log_sum{k}"] / np.log(1.0 + v)
         #persistence["ripser_sum"]+= persistence_sum
 
     return persistence
