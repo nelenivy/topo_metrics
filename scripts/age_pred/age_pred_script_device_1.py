@@ -24,7 +24,7 @@ warnings.filterwarnings(action="ignore")
 DEFAULT_LOSS = "ContrastiveLoss"
 
 # 'catboost' | 'mlp'
-DEFAULT_DOWNSTREAM = "catboost"
+DEFAULT_DOWNSTREAM = "mlp"
 
 # "lstm" | "gru"
 DEFAULT_BACKBONE = "gru"

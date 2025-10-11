@@ -79,7 +79,7 @@ def compute_metrics(embeddings_np, selected_metrics=None,
         "ne_sum": ne_sum,
         "self_clustering": self_clustering,
         "ripser": ripser_metric,
-        "ph_dim": calculate_ph_dim
+        #"ph_dim": calculate_ph_dim
     }
     if selected_metrics is None:
         selected_metrics = list(available_metrics.keys())

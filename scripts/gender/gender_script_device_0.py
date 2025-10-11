@@ -228,7 +228,7 @@ out_prefix = os.path.join(out_folder, "out")
 
 os.makedirs(out_folder, exist_ok=True)
 
-sample_fractions = np.array([0.02])#np.linspace(1 / 20, 1, 5)
+sample_fractions = np.array([0.05])#np.linspace(1 / 20, 1, 5)
 
 run_grid_search(
     all_hyperparameter_grids=all_hyperparameter_grids,

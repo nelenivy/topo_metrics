@@ -23,9 +23,9 @@ def calculate_ph_dim(W, min_points_in=200, max_points_in=1000, point_jump_in=50,
         h_dim=0, print_error=False, **kwargs):
     # sample_fn should output a [num_points, dim] array
     if W.shape[0] < max_points_in:
-        min_points = int((float(W.shape[0]) / max_points_in) * min_points_in)
+        min_points = max(10, int((float(W.shape[0]) / max_points_in) * min_points_in))
         max_points = W.shape[0]
-        point_jump = int((float(W.shape[0]) / max_points_in) * point_jump_in)
+        point_jump = max(1, int((float(W.shape[0]) / max_points_in) * point_jump_in))
     else:
         min_points, max_points, point_jump = min_points_in, max_points_in, point_jump_in
         
@@ -34,7 +34,7 @@ def calculate_ph_dim(W, min_points_in=200, max_points_in=1000, point_jump_in=50,
     lengths = []
     
     for n in test_n:
-        curr_l = sum_intervals_ripser(sample_W(W, n), h_dim=0)  
+        curr_l = sum_intervals_ripser(sample_W(W, n), h_dim=h_dim)  
         lengths.append(curr_l)
         
     lengths = np.array(lengths)

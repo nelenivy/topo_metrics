@@ -191,7 +191,7 @@ def evaluate_one_emb(
     )
 
     results = []
-    for name, data in [('all', embeddings_np), ('train', X_train), ('test', X_test)]:
+    for name, data in [('all', embeddings_np), ('train', X_train)]: #, ('test', X_test)]:
         for fraction in sample_fractions:
             metrics = compute_metrics(
                 data, selected_metrics, n_samples, fraction, verbose
