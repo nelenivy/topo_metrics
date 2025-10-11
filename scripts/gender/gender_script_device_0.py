@@ -27,7 +27,7 @@ warnings.filterwarnings(action="ignore")
 DEFAULT_LOSS = "ContrastiveLoss"
 
 # 'catboost' | 'mlp' | 'logreg'
-DEFAULT_DOWNSTREAM = "logreg"
+DEFAULT_DOWNSTREAM = 'logreg'#"catboost"
 
 # "lstm" | "gru"
 DEFAULT_BACKBONE = "gru"
@@ -223,12 +223,12 @@ all_hyperparameter_grids = create_truncated_params_grid(
 # -----------------------------------
 
 
-out_folder = f"{prefix}/outputs/output_{postfix}"
+out_folder = f"{prefix}/outputs/gender_output_{postfix}"
 out_prefix = os.path.join(out_folder, "out")
 
 os.makedirs(out_folder, exist_ok=True)
 
-sample_fractions = np.linspace(1 / 20, 1, 5)
+sample_fractions = np.array([0.02])#np.linspace(1 / 20, 1, 5)
 
 run_grid_search(
     all_hyperparameter_grids=all_hyperparameter_grids,
