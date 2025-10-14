@@ -22,7 +22,7 @@ warnings.filterwarnings(action="ignore")
 
 
 # "BarlowTwinsLoss" | "ContrastiveLoss" | "VicregLoss" | "SoftmaxLoss"
-DEFAULT_LOSS = "ContrastiveLoss"
+DEFAULT_LOSS = "BarlowTwinsLoss" #"ContrastiveLoss"
 
 # 'catboost'
 DEFAULT_DOWNSTREAM = "catboost"
@@ -82,7 +82,7 @@ targets = pd.read_csv(
     "https://huggingface.co/datasets/dllllb/age-group-prediction/resolve/main/train_target.csv?download=true"
 )
 
-transactions = transactions.dropna().reset_index(drop=True)[:100000]
+#transactions = transactions.dropna().reset_index(drop=True)[:100000]
 
 
 # -----------------------------------
@@ -114,7 +114,7 @@ preprocessor = PandasDataPreprocessor(
     return_records=False,
 )
 
-transactions = preprocessor.fit_transform(transactions)[:100000]
+transactions = preprocessor.fit_transform(transactions) 
 
 
 # -----------------------------------

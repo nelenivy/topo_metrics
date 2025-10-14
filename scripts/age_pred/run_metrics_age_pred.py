@@ -32,45 +32,40 @@ from metrics import (  # type: ignore
 )
 
 
-def ripser_metric(
-    embeddings: np.ndarray,
-    u: np.ndarray | None = None,
-    s: np.ndarray | None = None
-) -> Dict[str, float]:
+def ripser_metric(embeddings, u=None, s=None):    
     diagrams = rpp.run("--format point-cloud", embeddings)
     persistence = {}
-
-    # persistence["ripser_sum"] = 0
+    #persistence["ripser_sum"] = 0
     # Compute condensed pairwise distances (1D array)
-
     distances = pdist(embeddings)
-
     # Convert to square distance matrix
-
-    distance_matrix = squareform(distances).ravel()
+    distance_matrix = squareform(distances)
+    sorted_rows = np.sort(distance_matrix, axis=1)
+    mean_nearest_dist = sorted_rows[:, 10].mean()
+    mean_largest_dist = sorted_rows[:, -10].mean()
+    distances_arr = distance_matrix.ravel()
     quants = [0.5, 0.7, 0.8, 0.9, 0.95, 0.99]
-    norms = np.quantile(distance_matrix, quants)
-
+    norms = list(np.quantile(distances_arr, quants)) + [mean_nearest_dist, mean_largest_dist]
+    quants += ['mean_10', "mean_last_10"]
+    
     for k in range(len(diagrams)):
-        persistence_sum = sum([
-            death - birth
-            for birth, death in diagrams[k]
-            if death > birth
-        ])
+        pers_lens = [death - birth for birth, death in diagrams[k] if death > birth]
+        persistence_sum = sum(pers_lens)
         persistence[f"ripser_sum_H{k}"] = persistence_sum
-
-        persistence_sq_sum = sum([
-            (death - birth) ** 2
-            for birth, death in diagrams[k]
-            if death > birth
-        ])
+        persistence_sq_sum = sum([l ** 2 for l in pers_lens])
+        persistence[f"ripser_log_sum{k}"] = sum([np.log(1.0 + l) for l in pers_lens])
+        persistence[f"ripser_norm_sum{k}"] = sum([(death - birth) / (death + birth)
+                                    for birth, death in diagrams[k] if death > birth])
+        persistence[f"ripser_log_sum_norm{k}"] = sum([np.log(1.0 + (death - birth) / (death + birth))
+                                    for birth, death in diagrams[k] if death > birth])
+        
         persistence[f"ripser_sq_sum_H{k}"] = math.sqrt(persistence_sq_sum)
-
+        
         for q, v in zip(quants, norms):
             persistence[f"ripser_sum_H{k}_norm{q}"] = persistence[f"ripser_sum_H{k}"] / v
             persistence[f"ripser_sq_sum_H{k}_norm{q}"] = persistence[f"ripser_sq_sum_H{k}"] / v
-
-        # persistence["ripser_sum"]+= persistence_sum
+            persistence[f"ripser_log_sum{k}_norm{q}"] = persistence[f"ripser_log_sum{k}"] / np.log(1.0 + v)
+        #persistence["ripser_sum"]+= persistence_sum
 
     return persistence
 
@@ -189,7 +184,8 @@ def eval_downstream(
 
     return (
         accuracy_score(y_test, y_pred),
-        roc_auc_score(y_test, y_proba, multi_class="ovo", average="macro")
+        roc_auc_score(y_test, y_proba, multi_class="ovo", average="macro"),
+        X_train, X_test
     )
 
 
@@ -208,14 +204,14 @@ def evaluate_one_emb(
         columns=[col_id]
     ).to_numpy(dtype=np.float32)
 
-    accuracy, auc = eval_downstream(
+    accuracy, auc, X_train, X_test = eval_downstream(
         inf_test_embeddings, targets, col_id, target_col, downstream_type
     )
 
     results = []
     for fraction in sample_fractions:
         metrics = compute_metrics(
-            embeddings_np, selected_metrics, n_samples, fraction, verbose
+            X_train, selected_metrics, n_samples, fraction, verbose
         )
         metrics.update(
             {"accuracy": accuracy, "roc_auc": auc, "sample_fraction": fraction}

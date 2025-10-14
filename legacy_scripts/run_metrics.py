@@ -188,7 +188,7 @@ def eval_downstream(
     accuracy = accuracy_score(y_test, y_pred)
     auc_score = roc_auc_score(y_test, y_proba)
 
-    return accuracy, auc_score
+    return accuracy, auc_score, X_train, X_test
 
 
 def evaluate_one_emb(inf_test_embeddings, targets, selected_metrics=None,
@@ -197,14 +197,14 @@ def evaluate_one_emb(inf_test_embeddings, targets, selected_metrics=None,
                      verbose=0, n_samples=10, downstream_type="catboost"):
     embeddings_np = inf_test_embeddings.drop(
         columns=[col_id]).to_numpy(dtype=np.float32)
-    accuracy, auc = eval_downstream(inf_test_embeddings, targets,
+    accuracy, auc, X_train, X_test = eval_downstream(inf_test_embeddings, targets,
                                     col_id=col_id, target_col=target_col,
                                     downstream_type=downstream_type)
 
     res = []
 
     for sample_fraction in sample_fractions:
-        metrics = compute_metrics(embeddings_np, selected_metrics,
+        metrics = compute_metrics(X_train, selected_metrics,
                                   sample_fraction=sample_fraction,
                                   verbose=verbose, n_samples=n_samples)
         metrics['accuracy'] = accuracy

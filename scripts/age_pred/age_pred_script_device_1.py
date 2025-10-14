@@ -21,7 +21,7 @@ warnings.filterwarnings(action="ignore")
 
 
 # "BarlowTwinsLoss" | "ContrastiveLoss" | "VicregLoss" | "SoftmaxLoss"
-DEFAULT_LOSS = "ContrastiveLoss"
+DEFAULT_LOSS = "VicregLoss"#"ContrastiveLoss"
 
 # 'catboost' | 'mlp'
 DEFAULT_DOWNSTREAM = "mlp"
@@ -113,7 +113,7 @@ preprocessor = PandasDataPreprocessor(
     return_records=False,
 )
 
-transactions = preprocessor.fit_transform(transactions)[:100000]
+transactions = preprocessor.fit_transform(transactions)
 
 
 # -----------------------------------
