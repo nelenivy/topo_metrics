@@ -25,7 +25,6 @@ def clear_checkpoints_dir(checkpoints_path):
 
 
 def create_params_grid(fixed_params, variable_params):
-    # Создание списка всех гиперпараметров, которые нужно перебрать
     all_hyperparameter_grids = []
     for variable_param_name, variable_param_values in variable_params.items():
         for value in variable_param_values:
@@ -83,7 +82,7 @@ def eval_many_embs(embs_list, targets, col_id='customer_id',
         for i, metrics in enumerate(res):
             metrics_flattened = {k: round(v, 4) for k, v in metrics.items()}
             # times_flattened = {f"time_{k}": round(v, 4) for k, v in times.items()}
-            # Сохранение результатов
+
             res_dict = {
                 **curr_emb['info'],
                 **metrics_flattened
@@ -92,7 +91,6 @@ def eval_many_embs(embs_list, targets, col_id='customer_id',
 
             res_per_sample_frac[metrics['sample_fraction']].append(res_dict)
 
-    # Сохранение в CSV
     for sample_frac, new_result in res_per_sample_frac.items():
         print(sample_frac)
         print(new_result)

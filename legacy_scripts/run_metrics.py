@@ -127,7 +127,7 @@ def compute_metrics(embeddings_np, selected_metrics=None,
     std_times = {k: np.std(v) for k, v in times.items()}
 
     if verbose:
-        print("\n📊 Средние значения метрик и время вычисления:")
+        print("\n")
         for metric_name in averaged_metrics:
             metric_value = averaged_metrics[metric_name]
             metric_time = averaged_times.get(metric_name, None)
@@ -145,7 +145,6 @@ def eval_downstream(
     target_col="gender",
     downstream_type="catboost",  # 'catboost' | 'mlp' | 'logreg'
 ):
-    # подготовка данных
     targets_df = targets.set_index(col_id)
     inf_test_df = inf_test_embeddings.merge(
         targets_df, how="inner", on=col_id).set_index(col_id)
@@ -179,7 +178,7 @@ def eval_downstream(
             random_state=42,
         )
     else:
-        raise ValueError(f"Неизвестный тип модели: {downstream_type}")
+        raise ValueError(f" {downstream_type}")
 
     model.fit(X_train, y_train)
     y_pred = model.predict(X_test)

@@ -52,7 +52,6 @@ class CustomLogger(pl.Callback):
         if train_loss is not None and val_loss is not None:
             print(f"Epoch {trainer.current_epoch}: Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
         
-        # Если валидационный лосс увеличивается - фиксируем эпоху остановки
         if trainer.early_stopping_callback is not None and trainer.early_stopping_callback.wait_count == 0:
             self.early_stopping_epoch = trainer.current_epoch
 
@@ -156,7 +155,7 @@ class ModelKeeper:
                 "sourceB": sourceB_encoder,
             },
             input_size=params['embedding_dim'],
-            hidden_size=self.params["hidden_size"],  # Используем только текущее значение hidden_size
+            hidden_size=self.params["hidden_size"],
             seq_encoder_cls=RnnEncoder,
             type=params['rnn_encoder_type']
         )
@@ -222,7 +221,6 @@ class ModelKeeper:
             source_names = ("sourceA", "sourceB")
         )
 
-        # Обработка чекпоинтов
         checkpoint_files = glob.glob(f"{self.checkpoints_path}/{self.curr_checkpoint_name()}*.ckpt")
         checkpoint_files.sort()
         #logger.info(f"Elapsed time: {time() - cur_time:.2f} seconds")
@@ -234,7 +232,6 @@ class ModelKeeper:
             #logger.info(f"Processing checkpoint number {i}")
             self.model = CoLESModule.load_from_checkpoint(checkpoint, seq_encoder=self.seq_encoder)
 
-            # Вычисление метрик и времени
             self.model.eval()
             inference_module = InferenceModuleMultimodal(
                 model=self.model,
@@ -252,7 +249,6 @@ class ModelKeeper:
                 )
             inference_module.model.is_reduce_sequence = True
 
-            # Получение эмбеддингов
             inf_test_embeddings = pd.concat(
                 self.pl_trainer.predict(inference_module, inf_test_loader),
                 axis=0,
