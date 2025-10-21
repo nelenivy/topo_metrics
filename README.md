@@ -1,10 +1,8 @@
+# Topological Metric for Unsupervised Embedding Quality Evaluation
 ## Overview
-This repository supports experimental investigation of unsupervised embedding metrics, emphasizing topological measures, applied to financial and recommender system datasets. It facilitates parameter grid search and results aggregation for metric evaluation in complex analytic setups.
+This repository contains the experiments for the article "Topological Metric for Unsupervised Embedding Quality Evaluation." It enables an experimental investigation of unsupervised embedding metrics, with a focus on topological metrics applied to financial and recommender system datasets. The repository supports parameter grid search, epoch selection, and results aggregation for metric evaluation across various configurations.
 
 ## Main Entry Points
-
-- **sample_frac_results_all.ipynb**  
-  Notebook for aggregation and analysis of experimental results in the financial analytics context, enabling comprehensive metric comparison.
 
 - **recsys_challenge/gru/run.sh**  
   Script to execute parameter grid search experiments for the recommender system challenge using GRU model settings.
@@ -16,4 +14,7 @@ This repository supports experimental investigation of unsupervised embedding me
   Similar distributed experiment scripts targeting the gender prediction dataset.
 
 ## Results
-Processed experiment outputs in CSV format are organized within the **csv_results/** directory, structured to facilitate downstream analysis.
+ - Processed experiment outputs in CSV format are organized within the **csv_results/** directory, structured to facilitate downstream analysis.
+
+- **sample_frac_results_all.ipynb**  
+  Notebook for aggregation and analysis of experimental results in the financial analytics context, enabling comprehensive metric comparison.
