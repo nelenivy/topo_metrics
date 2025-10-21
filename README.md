@@ -9,7 +9,8 @@ This repository contains the experiments for the article "Topological Metric for
 
 ### Financial analytics
 - **financial_analytics/age_pred/age_pred_script_device_0.py and age_pred_script_device_1.py**
-- **financial_analytics/gender/gender_script_device_0.py and gender_script_device_1.py** 
+- **financial_analytics/gender/gender_script_device_0.py and gender_script_device_1.py**
+  
  Python scripts for hyperparameter optimization and optimal epoch selection experiments on the age and gender prediction datasets, designed for execution on specific devices.
 
 ## Results
