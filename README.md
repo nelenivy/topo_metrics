@@ -8,7 +8,7 @@ This repository contains the experiments for the article "Topological Metric for
   Script for executing hyperparameter optimization experiments on the RecSys Challenge 2025 using GRU model configurations.
 
 ### Financial analytics
-- **financial_analytics/age_pred/age_pred_script_device_0\1.py** and **financial_analytics/gender/gender_script_device_0\1.py**
+- **financial_analytics/age_pred/age_pred_script_device_0\1.py** and **financial_analytics/gender/gender_script_device_0\1.py**  
   Python scripts for hyperparameter optimization and optimal epoch selection experiments on the age and gender prediction datasets within the financial analytics domain, designed for execution on specific devices.
   
 ## Results
