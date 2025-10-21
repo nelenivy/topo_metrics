@@ -1,6 +1,6 @@
 # Topological Metric for Unsupervised Embedding Quality Evaluation
 ## Overview
-This repository contains the experiments for the article "Topological Metric for Unsupervised Embedding Quality Evaluation." It enables an experimental investigation of unsupervised embedding metrics, with a focus on topological metrics applied to financial and recommender system datasets. The repository supports parameter hyperparameter optimization, optimal epoch selection, and results aggregation for metrics evaluation across various configurations.
+This repository contains the experiments for the article "Topological Metric for Unsupervised Embedding Quality Evaluation." It enables an experimental investigation of unsupervised embedding metrics, with a focus on topological metrics applied to financial and recommender system datasets. The repository supports hyperparameter optimization, optimal epoch selection, and results aggregation for metrics evaluation across various configurations.
 
 ## Main Entry Points
 ### Behavioral modeling
