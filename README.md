@@ -10,6 +10,10 @@ This repository contains the experiments for the article "Topological Metric for
 ### Financial analytics
 - **financial_analytics/age_pred/age_pred_script_device_0\1.py** and **financial_analytics/gender/gender_script_device_0\1.py**  
   Python scripts for hyperparameter optimization and optimal epoch selection experiments on the age and gender prediction datasets within the financial analytics domain, designed for execution on specific devices.
+
+### Collaborative filtering
+- **collaborative_filtering/run_als.py** and **collaborative_filtering/run_bpr.py** 
+  Python scripts for hyperparameter optimization on the Movielens-20m dataset using collaborative filtering algorithms (ALS and BPR).
   
 ## Results
  - Processed experiment outputs in CSV format are organized within the **csv_results/** directory, structured to facilitate downstream analysis.
