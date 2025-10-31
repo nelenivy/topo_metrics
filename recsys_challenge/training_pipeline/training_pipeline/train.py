@@ -54,10 +54,7 @@ logger.setLevel(level=logging.INFO)
 def ripser_metric(embeddings, u=None, s=None):    
     diagrams = rpp.run("--format point-cloud", embeddings)
     persistence = {}
-    #persistence["ripser_sum"] = 0
-    # Compute condensed pairwise distances (1D array)
     distances = pdist(embeddings)
-    # Convert to square distance matrix
     distance_matrix = squareform(distances)
     sorted_rows = np.sort(distance_matrix, axis=1)
     mean_nearest_dist = sorted_rows[:, 10].mean()
@@ -167,15 +164,14 @@ def compute_metrics(embeddings_np, selected_metrics=None,
         n_samples=5, sample_fraction=1/20, clearml_task=None):    
     sample_size = max(1, int(sample_fraction * embeddings_np.shape[0]))
 
-    # Метрики
     available_metrics = {
-        # "rankme": rankme,
-        # "coherence": coherence,
-        # "pseudo_condition_number": pseudo_condition_number,
-        # "alpha_req": alpha_req,
-        # "stable_rank": stable_rank,
-        # "ne_sum": ne_sum,
-        # "self_clustering": self_clustering,
+        "rankme": rankme,
+        "coherence": coherence,
+        "pseudo_condition_number": pseudo_condition_number,
+        "alpha_req": alpha_req,
+        "stable_rank": stable_rank,
+        "ne_sum": ne_sum,
+        "self_clustering": self_clustering,
         "ripser": ripser_metric,
         "ph_dim": calculate_ph_dim
     }
@@ -237,7 +233,7 @@ def compute_metrics(embeddings_np, selected_metrics=None,
         for key, value in std_times.items():
             clearml_logger.report_single_value(f'std_time_{key}', value)
 
-    print("\n📊 Средние значения метрик и время вычисления:")
+    print("\n📊 Mean:")
     for metric_name in averaged_metrics:
         metric_value = averaged_metrics[metric_name]
         metric_time = averaged_times.get(metric_name, None)
