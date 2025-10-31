@@ -4,8 +4,19 @@ This repository contains the experiments for the article "Topological Metric for
 
 ## Main Entry Points
 ### Behavioral modeling
-- **recsys_challenge/gru/run.sh**  
-  Script for executing hyperparameter optimization experiments on the RecSys Challenge 2025 using GRU model configurations.
+
+- Script for executing hyperparameter optimization experiments on the RecSys Challenge 2025 using GRU model configurations.
+```bash
+export DATA_DIR="path_to_save_embds"
+sh recsys_challenge/gru/run.sh
+```
+
+-  Script for running classifier training on open tasks and metrics logging on GRU embeddings.
+```bash
+sh recsys_challenge/training_pipeline/gru_base.sh
+```
+
+A validation sample of the dataset is used for experiments. You can find out how to obtain it in the repository of RecSys Challenge 2025.
 
 ### Financial analytics
 - **financial_analytics/age_pred/age_pred_script_device_0\1.py** and **financial_analytics/gender/gender_script_device_0\1.py**  
@@ -13,7 +24,8 @@ This repository contains the experiments for the article "Topological Metric for
 
 ### Collaborative filtering
 - **collaborative_filtering/run_als.py** and **collaborative_filtering/run_bpr.py** 
-  Python scripts for hyperparameter optimization on the Movielens-20m dataset using collaborative filtering algorithms (ALS and BPR).
+  Python scripts for hyperparameter optimization on the Movielens-20m dataset and for save embeddings using collaborative filtering algorithms ALS and BPR.
+
   
 ## Results
  - Processed experiment outputs in CSV format are organized within the **csv_results/** directory, structured to facilitate downstream analysis.
