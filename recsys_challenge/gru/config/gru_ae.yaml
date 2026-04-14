@@ -1,0 +1,42 @@
+submit: False
+name: gru_${model_params.hidden_size}_${model_params.num_layers}_${model_params.dropout}_${dataset.max_length}
+cuda_visible_devices: 0
+
+clearml_project: unsupervised_metrics/gru_base_params_train
+clearml_task: ${name}
+
+data_path_raw: ${oc.env:DATA_DIR}/raw
+save_path: ${oc.env:DATA_DIR}
+
+data:
+  relevant: true
+  max_count: 5000
+  use_columns:
+  - week
+  - event_type
+  - category
+  - price
+  - sku
+  - url
+
+dataset:
+  max_length: 
+
+dataloader:
+  batch_size: 512
+  test_batch_size: 512
+  num_workers: 8
+
+model_params:
+  embedding_dim:
+  hidden_size: ${model_params.embedding_dim}
+  num_layers: 3
+  dropout: 0.1
+
+training_params:
+  lr: 0.001
+
+trainer_params:
+  max_epochs: 10
+  devices: 1
+patience: 3

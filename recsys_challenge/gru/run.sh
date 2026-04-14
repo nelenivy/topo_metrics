@@ -1,0 +1,1 @@
+python gru_embeddings.py --multirun dataset.max_length=256,64,128 model_params.embedding_dim=512,64,128,256 model_params.num_layers=1,2,3,4 model_params.dropout=0.1,0.3 cuda_visible_devices=0

@@ -1,0 +1,14 @@
+embeddings_path: /home/jovyan/shares/SR003.nfs2/recsys_data/recsys_challenge_2025/stage2/unsupervised_gru_base/
+sample_size:
+estimator_names:
+  - CorrInt
+  - KNN
+  - MiND_ML
+  - TwoNN
+  - MLE
+  - FisherS
+  - lPCA
+  - TLE
+  - MADA
+  - MOM
+output_file: gru_intrinsic_dim_global_all_data.csv
