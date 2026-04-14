@@ -38,6 +38,17 @@ def _profile_line(label: str, elapsed_s: float, /, **fields) -> None:
         logger.info("[profile] %s | %.3fs", label, elapsed_s)
 
 
+def _require_finite_embeddings_array(embeddings_np: np.ndarray, *, label: str) -> np.ndarray:
+    arr = np.array(embeddings_np, dtype=np.float32, copy=True)
+    finite = np.isfinite(arr)
+    if not finite.all():
+        n_bad = int(arr.size - finite.sum())
+        raise FloatingPointError(
+            f"unsup_metrics: {label} contains {n_bad} non-finite values"
+        )
+    return arr
+
+
 def _persistence_diagrams_point_cloud(
     embeddings: np.ndarray,
     maxdim: int = 1,
@@ -569,6 +580,10 @@ def compute_metrics(
     -------
     dict with keys "metric_<name>" (mean) and "std_<name>" (relative std)
     """
+    embeddings_np = _require_finite_embeddings_array(
+        embeddings_np,
+        label="compute_metrics input",
+    )
     N = embeddings_np.shape[0]
     sample_size = max(int(sample_fraction * N), min_sample_size)
     sample_size = min(sample_size, N)

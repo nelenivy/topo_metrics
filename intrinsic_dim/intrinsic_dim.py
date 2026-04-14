@@ -11,6 +11,14 @@ FAST_GLOBAL_ESTIMATORS = ("TwoNN", "MLE", "MOM", "lPCA")
 FAST_LOCAL_ESTIMATORS = ("MLE", "MOM")
 
 
+def _dedupe_exact_rows(data: np.ndarray) -> tuple[np.ndarray, int]:
+    arr = np.asarray(data, dtype=np.float32)
+    if arr.ndim != 2 or arr.shape[0] <= 1:
+        return arr, 0
+    unique = np.unique(np.ascontiguousarray(arr), axis=0)
+    return unique, int(arr.shape[0] - unique.shape[0])
+
+
 def compute_intrinsic_dim_global(data, estimator_names=None, verbose=False):
     """
     Compute global intrinsic dimension estimates using different estimators.
@@ -33,6 +41,16 @@ def compute_intrinsic_dim_global(data, estimator_names=None, verbose=False):
 
     if estimator_names is None:
         estimator_names = ['MLE', 'lPCA', 'MOM']
+
+    data, n_duplicate_rows = _dedupe_exact_rows(data)
+    if n_duplicate_rows > 0:
+        pass
+
+    if data.shape[0] < 2:
+        return {
+            **{f"dim_{name}": float("nan") for name in estimator_names},
+            **{f"time_{name}": 0.0 for name in estimator_names},
+        }
 
     results = {}
 

@@ -31,6 +31,7 @@ def layer_store_hdf5_path(
     split_name: str,
     poolings: List[str],
     n_layers: int,
+    torch_dtype: Optional[str] = None,
 ) -> Path:
     """
     Absolute path to the HDF5 file ``LayerEmbeddingStore`` uses for this key
@@ -45,6 +46,9 @@ def layer_store_hdf5_path(
     else:
         pl = ",".join(poolings)
         key = f"{model_name}_{dataset_name}_{split_name}_mp_{pl}_{n_layers}"
+    if torch_dtype:
+        dtype_tag = str(torch_dtype).strip().lower().replace("/", "_")
+        key = f"{key}_{dtype_tag}"
     h = hashlib.md5(key.encode()).hexdigest()[:12]
     return cache_dir / f"layer_store_{h}.h5"
 
@@ -265,9 +269,9 @@ class LayerEmbeddingStore:
             logger.info(f"LayerEmbeddingStore: loading from {cache_file}")
             try:
                 self._load_from_hdf5(str(cache_file), texts)
-            except KeyError as e:
+            except (KeyError, FloatingPointError) as e:
                 logger.warning(
-                    "LayerEmbeddingStore: stale HDF5 cache (%s), recomputing",
+                    "LayerEmbeddingStore: stale/corrupt HDF5 cache (%s), recomputing",
                     e,
                 )
                 try:
@@ -305,7 +309,7 @@ class LayerEmbeddingStore:
                 f"{self.n_layers} layers × {len(texts)} texts{extra}"
             )
             started = time.perf_counter()
-            self._compute_and_save(texts, str(cache_file))
+            self._compute_and_save(texts, cache_file)
             logger.info(
                 "[profile] layer_store_compute_and_save | %.3fs | model=%s | dataset=%s | split=%s | texts=%s | poolings=%s",
                 time.perf_counter() - started,
@@ -340,10 +344,22 @@ class LayerEmbeddingStore:
     # Internal: compute via LayerEncoder (single forward pass per batch)  #
     # ------------------------------------------------------------------ #
 
-    def _compute_and_save(self, texts: List[str], cache_file: str) -> None:
+    @staticmethod
+    def _require_finite_matrix(arr: np.ndarray, *, label: str) -> np.ndarray:
+        out = np.asarray(arr, dtype=np.float32)
+        finite = np.isfinite(out)
+        if not finite.all():
+            n_bad = int(out.size - finite.sum())
+            raise FloatingPointError(
+                f"LayerEmbeddingStore: {label} contains {n_bad} non-finite values"
+            )
+        return out
+
+    def _compute_and_save(self, texts: List[str], cache_file: os.PathLike | str) -> None:
+        cache_file = Path(cache_file)
         self._text_index = {t: i for i, t in enumerate(texts)}
 
-        tmp = cache_file + ".tmp"
+        tmp = cache_file.with_name(cache_file.name + ".tmp")
         if tmp.exists():
             tmp.unlink()
 
@@ -369,8 +385,22 @@ class LayerEmbeddingStore:
                 logger.debug("  batch %s/%s (%s texts)", b + 1, n_batches, len(batch))
                 all_layer_embs = layer_enc.encode_batch(batch, return_all_layers=True)
                 for layer_idx, emb in enumerate(all_layer_embs):
-                    accum[layer_idx].append(np.asarray(emb, dtype=np.float32))
-            layer_embs = {i: np.concatenate(accum[i], axis=0) for i in range(self.n_layers)}
+                    accum[layer_idx].append(
+                        self._require_finite_matrix(
+                            emb,
+                            label=(
+                                f"compute cache {cache_file.name} "
+                                f"batch={b + 1}/{n_batches} layer={layer_idx}"
+                            ),
+                        )
+                    )
+            layer_embs = {
+                i: self._require_finite_matrix(
+                    np.concatenate(accum[i], axis=0),
+                    label=f"compute cache {cache_file.name} layer={i}",
+                )
+                for i in range(self.n_layers)
+            }
             self._pooled = {p: layer_embs}
             self._save_to_hdf5_legacy(tmp, texts, layer_embs)
         else:
@@ -389,9 +419,23 @@ class LayerEmbeddingStore:
                 multi = layer_enc.encode_batch_multi_poolings(batch, self.poolings)
                 for p in self.poolings:
                     for layer_idx, emb in enumerate(multi[p]):
-                        accum_mp[p][layer_idx].append(np.asarray(emb, dtype=np.float32))
+                        accum_mp[p][layer_idx].append(
+                            self._require_finite_matrix(
+                                emb,
+                                label=(
+                                    f"compute cache {cache_file.name} "
+                                    f"batch={b + 1}/{n_batches} pooling={p} layer={layer_idx}"
+                                ),
+                            )
+                        )
             self._pooled = {
-                p: {i: np.concatenate(accum_mp[p][i], axis=0) for i in range(self.n_layers)}
+                p: {
+                    i: self._require_finite_matrix(
+                        np.concatenate(accum_mp[p][i], axis=0),
+                        label=f"compute cache {cache_file.name} pooling={p} layer={i}",
+                    )
+                    for i in range(self.n_layers)
+                }
                 for p in self.poolings
             }
             self._save_to_hdf5_multi(tmp, texts, self._pooled)
@@ -527,7 +571,10 @@ class LayerEmbeddingStore:
             f.create_dataset("texts", data=[t.encode("utf-8") for t in texts], dtype=dt)
             grp = f.create_group("layers")
             for layer_idx, embs in layer_embs.items():
-                embs_f32 = np.asarray(embs, dtype=np.float32)
+                embs_f32 = self._require_finite_matrix(
+                    embs,
+                    label=f"HDF5 write {path} layer={layer_idx}",
+                )
                 grp.create_dataset(
                     str(layer_idx),
                     data=embs_f32,
@@ -553,7 +600,10 @@ class LayerEmbeddingStore:
             for p, layer_embs in pooled.items():
                 pg = lg.create_group(p)
                 for layer_idx, embs in layer_embs.items():
-                    embs_f32 = np.asarray(embs, dtype=np.float32)
+                    embs_f32 = self._require_finite_matrix(
+                        embs,
+                        label=f"HDF5 write {path} pooling={p} layer={layer_idx}",
+                    )
                     pg.create_dataset(
                         str(layer_idx),
                         data=embs_f32,
@@ -583,11 +633,23 @@ class LayerEmbeddingStore:
                 self._pooled = {}
                 for p in self.poolings:
                     grp = layers_grp[p]
-                    self._pooled[p] = {int(k): grp[k][:] for k in grp.keys()}
+                    self._pooled[p] = {
+                        int(k): self._require_finite_matrix(
+                            grp[k][:],
+                            label=f"HDF5 load {path} pooling={p} layer={k}",
+                        )
+                        for k in grp.keys()
+                    }
             else:
                 p0 = self.poolings[0]
                 self._pooled = {
-                    p0: {int(k): layers_grp[k][:] for k in layers_grp.keys()}
+                    p0: {
+                        int(k): self._require_finite_matrix(
+                            layers_grp[k][:],
+                            label=f"HDF5 load {path} layer={k}",
+                        )
+                        for k in layers_grp.keys()
+                    }
                 }
 
         missing = [t for t in texts if t not in self._text_index]
@@ -635,6 +697,7 @@ class LayerEmbeddingStore:
             split_name,
             self.poolings,
             self.n_layers,
+            self.torch_dtype,
         )
 
 

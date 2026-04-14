@@ -15,6 +15,12 @@ python scripts/invalidate_embedding_cache.py \\
   --output-dir ./results/standard \\
   --model bert-base-uncased --task SciFact --split test \\
   --poolings last_token mean cls --n-layers 13
+
+# Remove the float32 or bf16 variant explicitly:
+python scripts/invalidate_embedding_cache.py \\
+  --output-dir ./results/standard \\
+  --model bert-base-uncased --task SciFact --split test \\
+  --poolings last_token mean cls --n-layers 13 --torch-dtype float32
 """
 
 from __future__ import annotations
@@ -58,6 +64,11 @@ def main() -> None:
         type=int,
         help="Layer count passed to LayerEmbeddingStore (hidden + 1 for BERT)",
     )
+    p.add_argument(
+        "--torch-dtype",
+        default="bfloat16",
+        help="Embedding weight dtype used in the cache key (default: bfloat16)",
+    )
     args = p.parse_args()
 
     out = Path(args.output_dir).resolve()
@@ -85,6 +96,7 @@ def main() -> None:
             args.split,
             list(args.poolings),
             int(args.n_layers),
+            args.torch_dtype,
         )
         print(("would remove " if args.dry_run else "removing ") + str(path))
         if not args.dry_run and path.exists():

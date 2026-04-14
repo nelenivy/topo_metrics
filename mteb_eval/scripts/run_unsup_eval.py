@@ -99,6 +99,7 @@ from src.aggregated_encoder import LayerEncoder, StoreBackedAggregatedEncoder
 from src.cache_manager import LayerEmbeddingStore, PooledLayerEmbeddingView, layer_store_hdf5_path
 from src.mteb_gpu_proxy import gpu_proxy_main_score
 from src.mteb_text_align import iter_retrieval_corpus_passages
+from src.utils import extract_texts_from_dataset
 
 try:
     from tqdm import tqdm
@@ -191,19 +192,12 @@ def _default_embedding_weight_dtype(device: str) -> Optional[str]:
     """
     Default HF weight dtype for embedding extraction.
 
-    On CUDA with native bf16 support, default to bf16 weights (fast + lower VRAM).
-    Otherwise keep None (HF default / fp32), which is safer on CPU and older GPUs.
+    Use bfloat16 on CUDA for the speedup path and fall back to float32 on
+    non-CUDA devices. Users can still override with ``--torch-dtype``.
     """
-    if not str(device).lower().startswith("cuda"):
-        return None
-    if not torch.cuda.is_available():
-        return None
-    try:
-        if torch.cuda.is_bf16_supported():
-            return "bfloat16"
-    except Exception:
-        pass
-    return None
+    if str(device).lower().startswith("cuda") and torch.cuda.is_available():
+        return "bfloat16"
+    return "float32"
 
 
 def _infer_embedding_batch_size(
@@ -793,14 +787,6 @@ def _iter_leaf_datasets(dataset_like):
 def extract_all_texts(task) -> List[str]:
     """Extract all unique texts needed by the task, including nested splits."""
     task_type = task.metadata.type
-    raw: List[str] = []
-
-    def _add(items):
-        for item in items:
-            if isinstance(item, list):
-                raw.extend(str(s) for s in item if s)
-            elif item:
-                raw.append(str(item))
 
     if task_type in ("Retrieval", "Reranking"):
         dataset = _resolve_dataset(task)
@@ -812,6 +798,7 @@ def extract_all_texts(task) -> List[str]:
         data_dict = val_data.to_dict() if hasattr(val_data, "to_dict") else dict(val_data)
 
         queries = data_dict.get("queries", {})
+        raw: List[str] = []
         if isinstance(queries, dict):
             raw.extend(str(v) for v in queries.values() if v)
         elif hasattr(queries, "column_names"):
@@ -823,34 +810,7 @@ def extract_all_texts(task) -> List[str]:
         raw.extend(iter_retrieval_corpus_passages(corpus))
         return _unique_nonempty_stripped(raw)
 
-    for leaf in _iter_leaf_datasets(task.dataset):
-        if not hasattr(leaf, "to_dict"):
-            continue
-        data_dict = leaf.to_dict()
-
-        if task_type in ("Classification", "MultilabelClassification"):
-            for col in ("text", "texts", "sentence", "content"):
-                if col in data_dict:
-                    _add(data_dict[col])
-                    break
-
-        elif task_type in ("STS", "PairClassification", "BitextMining"):
-            for col in ("sentence1", "sentence2"):
-                if col in data_dict:
-                    _add(data_dict[col])
-
-        elif task_type == "Clustering":
-            for col in ("sentences", "text", "texts"):
-                if col in data_dict:
-                    _add(data_dict[col])
-                    break
-
-        else:
-            for col in ("text", "sentence1", "sentence2", "sentences"):
-                if col in data_dict:
-                    _add(data_dict[col])
-
-    return _unique_nonempty_stripped(raw)
+    return extract_texts_from_dataset(task.dataset, task_type)
 
 
 def extract_retrieval_texts(task) -> Dict[str, List[str]]:
@@ -2061,6 +2021,7 @@ def run_evaluation(args) -> None:
                         "test",
                         valid_poolings,
                         n_layers,
+                        eval_torch_dtype,
                     )
                     if len(precompute_devs) > 1:
                         need_shards = (not cache_h5.exists()) or (
@@ -2386,7 +2347,7 @@ def main():
         help=(
             "HF ``from_pretrained(torch_dtype=...)`` for embedding extraction / probe. "
             "Examples: bfloat16, float16, float32. "
-            "If omitted on CUDA with bf16 support, defaults to bfloat16 weights for speed/VRAM."
+            "If omitted, defaults to bfloat16 on CUDA and float32 otherwise."
         ),
     )
     parser.add_argument(
