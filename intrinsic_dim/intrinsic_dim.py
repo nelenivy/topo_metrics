@@ -7,6 +7,9 @@ import time
 import numpy as np
 import skdim
 
+FAST_GLOBAL_ESTIMATORS = ("TwoNN", "MLE", "MOM", "lPCA")
+FAST_LOCAL_ESTIMATORS = ("MLE", "MOM")
+
 
 def compute_intrinsic_dim_global(data, estimator_names=None, verbose=False):
     """
@@ -46,7 +49,7 @@ def compute_intrinsic_dim_global(data, estimator_names=None, verbose=False):
             results[f'dim_{name}'] = dim
             results[f'time_{name}'] = end_time - start_time
             if verbose:
-                print(f"Dimension: {results[f'dim_mean_{name}']:.2f}, time taken: {end_time - start_time:.3f} seconds")
+                print(f"Dimension: {float(np.asarray(dim)):.2f}, time taken: {end_time - start_time:.3f} seconds")
 
         except Exception as e:
             print(f"Error computing {name}: {e}")

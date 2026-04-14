@@ -36,6 +36,16 @@ logger = logging.getLogger(__name__)
 _SCRATCH_FLOAT_MULT = 3.0
 
 
+def _finite_score_or_none(score: Any) -> Optional[float]:
+    try:
+        value = float(score)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(value):
+        return None
+    return value
+
+
 def _cuda_device_index(device: torch.device) -> Optional[int]:
     if device.type != "cuda":
         return None
@@ -527,7 +537,14 @@ def retrieval_gpu_proxy_main_score(
         return None
     tr = TaskResult.from_task_results(task, nested_scores, evaluation_time=0.0)
     try:
-        score = float(tr.get_score(splits=[split_name]))
+        score = _finite_score_or_none(tr.get_score(splits=[split_name]))
+        if score is None:
+            logger.warning(
+                "GPU proxy: non-finite retrieval score for %s split %s; falling back to mteb.evaluate",
+                getattr(getattr(task, "metadata", None), "name", type(task).__name__),
+                split_name,
+            )
+            return None
         logger.info(
             "[profile] retrieval_gpu_proxy_total | %.3fs | task=%s | split=%s | subsets=%s | score=%s",
             time.perf_counter() - started_total,
@@ -554,7 +571,7 @@ def gpu_proxy_main_score(
     proxy_query_batch: Optional[int] = None,
     proxy_corpus_chunk: Optional[int] = None,
 ) -> Optional[float]:
-    """Dense GPU retrieval/reranking or precomputed-embedding proxy for other supported tasks."""
+    """Dense GPU proxy for retrieval/reranking and supported non-retrieval tasks."""
     from mteb.abstasks import AbsTaskRetrieval
 
     if isinstance(task, AbsTaskRetrieval):

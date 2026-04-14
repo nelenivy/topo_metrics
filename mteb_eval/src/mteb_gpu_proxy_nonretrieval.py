@@ -17,6 +17,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from sklearn.base import clone
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics.pairwise import (
     paired_cosine_distances,
     paired_euclidean_distances,
@@ -36,6 +37,16 @@ from src.embedding_extractor import extract_embedding_matrix
 from src.layer_spec import LayerSpec
 
 logger = logging.getLogger(__name__)
+
+
+def _finite_score_or_none(score: Any) -> Optional[float]:
+    try:
+        value = float(score)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(value):
+        return None
+    return value
 
 
 def _branch_split_dict(task: Any, hf_subset: str) -> Any:
@@ -77,6 +88,119 @@ def _pair_scores_torch(
     man = -(a - b).abs().sum(dim=-1).detach().cpu().numpy()
     euc = -torch.linalg.norm(a - b, dim=-1).detach().cpu().numpy()
     return cos, man, euc
+
+
+def _classification_proxy_device(device: str) -> torch.device:
+    if torch.cuda.is_available() and str(device).startswith("cuda"):
+        return torch.device(device)
+    return torch.device("cpu")
+
+
+def _class_weight_tensor(
+    y: np.ndarray,
+    classes: np.ndarray,
+    class_weight: Any,
+    device: torch.device,
+) -> Optional[torch.Tensor]:
+    if class_weight is None:
+        return None
+
+    if class_weight == "balanced":
+        counts = np.array([(y == c).sum() for c in classes], dtype=np.float32)
+        counts = np.maximum(counts, 1.0)
+        weights = float(len(y)) / (float(len(classes)) * counts)
+        return torch.tensor(weights, dtype=torch.float32, device=device)
+
+    if isinstance(class_weight, dict):
+        weights = np.ones(len(classes), dtype=np.float32)
+        class_to_idx = {c: i for i, c in enumerate(classes)}
+        for label, weight in class_weight.items():
+            if label in class_to_idx:
+                weights[class_to_idx[label]] = float(weight)
+        return torch.tensor(weights, dtype=torch.float32, device=device)
+
+    return None
+
+
+def _predict_logistic_regression_gpu(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_test: np.ndarray,
+    *,
+    device: str,
+    evaluator_model: Any,
+    seed: Optional[int] = None,
+) -> Optional[np.ndarray]:
+    if not isinstance(evaluator_model, LogisticRegression):
+        return None
+    dev = _classification_proxy_device(device)
+    if dev.type != "cuda":
+        return None
+
+    if seed is not None:
+        torch.manual_seed(int(seed))
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(int(seed))
+
+    classes, y_idx = np.unique(y_train, return_inverse=True)
+    if len(classes) < 2:
+        return np.asarray([classes[0]] * len(X_test))
+
+    max_iter = int(getattr(evaluator_model, "max_iter", 100) or 100)
+    max_iter = max(20, min(max_iter, 150))
+    c_value = float(getattr(evaluator_model, "C", 1.0) or 1.0)
+    fit_intercept = bool(getattr(evaluator_model, "fit_intercept", True))
+    class_weight = _class_weight_tensor(
+        np.asarray(y_train), classes, getattr(evaluator_model, "class_weight", None), dev
+    )
+    reg_strength = 0.0 if getattr(evaluator_model, "penalty", "l2") == "none" else 1.0 / max(c_value, 1e-6)
+
+    x_tr = torch.from_numpy(np.asarray(X_train, dtype=np.float32)).to(dev)
+    y_tr = torch.from_numpy(np.asarray(y_idx, dtype=np.int64)).to(dev)
+    x_te = torch.from_numpy(np.asarray(X_test, dtype=np.float32)).to(dev)
+
+    model = torch.nn.Linear(x_tr.shape[1], len(classes), bias=fit_intercept).to(dev)
+    torch.nn.init.zeros_(model.weight)
+    if model.bias is not None:
+        torch.nn.init.zeros_(model.bias)
+
+    loss_fn = torch.nn.CrossEntropyLoss(weight=class_weight)
+    optimizer = torch.optim.LBFGS(
+        model.parameters(),
+        lr=1.0,
+        max_iter=max_iter,
+        history_size=min(20, max_iter),
+        line_search_fn="strong_wolfe",
+    )
+
+    def closure():
+        optimizer.zero_grad(set_to_none=True)
+        logits = model(x_tr)
+        loss = loss_fn(logits, y_tr)
+        if reg_strength:
+            loss = loss + 0.5 * reg_strength * model.weight.pow(2).sum()
+        loss.backward()
+        return loss
+
+    optimizer.step(closure)
+    with torch.inference_mode():
+        pred_idx = model(x_te).argmax(dim=-1).detach().cpu().numpy()
+    return classes[pred_idx]
+
+
+def _predict_logistic_regression_sklearn(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_test: np.ndarray,
+    *,
+    evaluator_model: Any,
+    seed: Optional[int] = None,
+) -> np.ndarray:
+    clf = clone(evaluator_model)
+    if seed is not None and "random_state" in clf.get_params():
+        clf.set_params(random_state=int(seed))
+    clf.fit(X_train, y_train)
+    return clf.predict(X_test)
 
 
 def sts_gpu_proxy_main_score(
@@ -148,8 +272,6 @@ def pair_classification_gpu_proxy_main_score(
     for hf_subset in hf_subsets:
         branch = _branch_split_dict(task, hf_subset)
         raw = branch[split_name]
-        if task.metadata.modalities == ["text"] and len(raw) == 1:
-            raw = raw[0]
         s1, s2 = _rows_texts_sts_pair(raw, c1, c2)
         E1 = extract_embedding_matrix(store, s1, spec, n_layers)
         E2 = extract_embedding_matrix(store, s2, spec, n_layers)
@@ -204,8 +326,6 @@ def classification_gpu_proxy_main_score(
             ds = branch
         train_split = ds[train_key]
         eval_split = ds[split_name]
-        train_texts = [str(train_split[i][in_col]).strip() for i in range(len(train_split))]
-        X_train_all = extract_embedding_matrix(store, train_texts, spec, n_layers)
         test_texts = [str(eval_split[i][in_col]).strip() for i in range(len(eval_split))]
         X_test = extract_embedding_matrix(store, test_texts, spec, n_layers)
         y_test = eval_split[y_col]
@@ -214,18 +334,25 @@ def classification_gpu_proxy_main_score(
         idxs_state = None
         for i in range(task.n_experiments):
             train_ds, idxs_state = task._undersample_data(train_split, i, idxs_state)
-            X_tr = extract_embedding_matrix(
-                store,
-                [str(train_ds[j][in_col]).strip() for j in range(len(train_ds))],
-                spec,
-                n_layers,
+            train_texts = [str(train_ds[j][in_col]).strip() for j in range(len(train_ds))]
+            X_tr = extract_embedding_matrix(store, train_texts, spec, n_layers)
+            y_tr = np.asarray(train_ds[y_col])
+            y_pred = _predict_logistic_regression_gpu(
+                X_tr,
+                y_tr,
+                X_test,
+                device=device,
+                evaluator_model=task.evaluator_model,
+                seed=getattr(task, "seed", None),
             )
-            y_tr = train_ds[y_col]
-            clf = clone(task.evaluator_model)
-            if "random_state" in clf.get_params():
-                clf.set_params(random_state=task.seed)
-            clf.fit(X_tr, y_tr)
-            y_pred = clf.predict(X_test)
+            if y_pred is None:
+                y_pred = _predict_logistic_regression_sklearn(
+                    X_tr,
+                    y_tr,
+                    X_test,
+                    evaluator_model=task.evaluator_model,
+                    seed=getattr(task, "seed", None),
+                )
             scores.append(task._calculate_scores(y_test, y_pred))
 
         avg_scores: Dict[str, Any] = {
@@ -337,5 +464,13 @@ def non_retrieval_gpu_proxy_main_score(
     ):
         out = fn(task, store, spec, n_layers, device, encoder)
         if out is not None:
-            return out
+            score = _finite_score_or_none(out)
+            if score is None:
+                logger.warning(
+                    "GPU proxy: non-finite %s score for %s; falling back to mteb.evaluate",
+                    fn.__name__,
+                    getattr(getattr(task, "metadata", None), "name", type(task).__name__),
+                )
+                return None
+            return score
     return None

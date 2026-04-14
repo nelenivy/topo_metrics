@@ -15,8 +15,10 @@ from __future__ import annotations
 import gc
 import math
 import logging
+from functools import lru_cache
 from time import perf_counter
 from collections import defaultdict
+from pathlib import Path
 from typing import Callable, List, Optional, Dict, Tuple
 
 import numpy as np
@@ -271,6 +273,88 @@ def _import_graph_metrics():
     return rankme, coherence, pseudo_condition_number, alpha_req, stable_rank, ne_sum, self_clustering
 
 
+@lru_cache(maxsize=1)
+def _import_intrinsic_dim_metrics():
+    """Import the shared intrinsic-dimension helpers lazily.
+
+    Ensures the repo root is present on ``sys.path`` so the sibling
+    ``intrinsic_dim`` directory can be imported as a namespace package.
+    """
+    import sys
+
+    repo_root = Path(__file__).resolve().parents[2]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+
+    from intrinsic_dim.intrinsic_dim import (
+        FAST_GLOBAL_ESTIMATORS,
+        FAST_LOCAL_ESTIMATORS,
+        compute_intrinsic_dim_global,
+        compute_intrinsic_dim_local,
+    )
+
+    return (
+        FAST_GLOBAL_ESTIMATORS,
+        FAST_LOCAL_ESTIMATORS,
+        compute_intrinsic_dim_global,
+        compute_intrinsic_dim_local,
+    )
+
+
+def _safe_float(value: object) -> float:
+    try:
+        return float(np.asarray(value).reshape(-1)[0])
+    except Exception:
+        return float("nan")
+
+
+_FAST_INTRINSIC_DIM_GLOBAL_OUTPUT_NAMES = (
+    "intrinsic_dim_global_twonn",
+    "intrinsic_dim_global_mle",
+    "intrinsic_dim_global_mom",
+    "intrinsic_dim_global_lpca",
+)
+
+_FAST_INTRINSIC_DIM_LOCAL_OUTPUT_NAMES = tuple(
+    f"intrinsic_dim_local_{est}_{suffix}"
+    for est in ("mle", "mom")
+    for suffix in ("mean", "std", "min", "max", "median", "q25", "q75", "q10", "q90", "q05", "q95")
+)
+
+
+def _intrinsic_dim_global_fast(sample, u=None, s=None) -> Dict[str, float]:
+    global_names, _, compute_intrinsic_dim_global, _ = _import_intrinsic_dim_metrics()
+    results = compute_intrinsic_dim_global(
+        sample,
+        estimator_names=list(global_names),
+        verbose=False,
+    )
+    return {
+        f"intrinsic_dim_global_{name.lower()}": _safe_float(results.get(f"dim_{name}"))
+        for name in global_names
+    }
+
+
+def _intrinsic_dim_local_fast(sample, u=None, s=None) -> Dict[str, float]:
+    _, local_names, _, compute_intrinsic_dim_local = _import_intrinsic_dim_metrics()
+    results = compute_intrinsic_dim_local(
+        sample,
+        estimator_names=list(local_names),
+        n_neighbors=50,
+        n_jobs=-1,
+        verbose=False,
+    )
+    suffixes = ("mean", "std", "min", "max", "median", "q25", "q75", "q10", "q90", "q05", "q95")
+    out: Dict[str, float] = {}
+    for name in local_names:
+        name_l = name.lower()
+        for suffix in suffixes:
+            out[f"intrinsic_dim_local_{name_l}_{suffix}"] = _safe_float(
+                results.get(f"dim_{suffix}_{name}")
+            )
+    return out
+
+
 def _available_metric_functions(
     include_ph_dim: bool = False,
     ripser_maxdim: int = 1,
@@ -297,6 +381,8 @@ def _available_metric_functions(
         "stable_rank": stable_rank,
         "ne_sum": ne_sum,
         "self_clustering": self_clustering,
+        "intrinsic_dim_global_fast": _intrinsic_dim_global_fast,
+        "intrinsic_dim_local_fast": _intrinsic_dim_local_fast,
         "ripser": _ripser_wrapped,
     }
     if include_ph_dim:
@@ -359,6 +445,10 @@ def metric_output_map(
     for metric_name in chosen:
         if metric_name == "ripser":
             out[metric_name] = _ripser_output_names(ripser_maxdim)
+        elif metric_name == "intrinsic_dim_global_fast":
+            out[metric_name] = list(_FAST_INTRINSIC_DIM_GLOBAL_OUTPUT_NAMES)
+        elif metric_name == "intrinsic_dim_local_fast":
+            out[metric_name] = list(_FAST_INTRINSIC_DIM_LOCAL_OUTPUT_NAMES)
         else:
             out[metric_name] = [metric_name]
     return out

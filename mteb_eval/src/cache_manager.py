@@ -259,23 +259,42 @@ class LayerEmbeddingStore:
         """
         cache_file = self._cache_file_path(dataset_name, split_name)
 
+        loaded = False
         if cache_file.exists() and self._hdf5_is_valid(str(cache_file)):
             started = time.perf_counter()
             logger.info(f"LayerEmbeddingStore: loading from {cache_file}")
-            self._load_from_hdf5(str(cache_file), texts)
-            logger.info(
-                "[profile] layer_store_hdf5_load | %.3fs | model=%s | dataset=%s | split=%s | texts=%s | poolings=%s",
-                time.perf_counter() - started,
-                self.model_name,
-                dataset_name,
-                split_name,
-                len(texts),
-                ",".join(self.poolings),
-            )
-        else:
+            try:
+                self._load_from_hdf5(str(cache_file), texts)
+            except KeyError as e:
+                logger.warning(
+                    "LayerEmbeddingStore: stale HDF5 cache (%s), recomputing",
+                    e,
+                )
+                try:
+                    cache_file.unlink()
+                except OSError:
+                    pass
+                self._pooled.clear()
+                self._text_index.clear()
+                self._overflow.clear()
+            else:
+                loaded = True
+                logger.info(
+                    "[profile] layer_store_hdf5_load | %.3fs | model=%s | dataset=%s | split=%s | texts=%s | poolings=%s",
+                    time.perf_counter() - started,
+                    self.model_name,
+                    dataset_name,
+                    split_name,
+                    len(texts),
+                    ",".join(self.poolings),
+                )
+        if not loaded:
             if cache_file.exists():
                 logger.warning("LayerEmbeddingStore: corrupt/incomplete HDF5, recomputing")
-                cache_file.unlink()
+                try:
+                    cache_file.unlink()
+                except OSError:
+                    pass
             extra = (
                 f" × {len(self.poolings)} poolings (one forward/batch)"
                 if len(self.poolings) > 1

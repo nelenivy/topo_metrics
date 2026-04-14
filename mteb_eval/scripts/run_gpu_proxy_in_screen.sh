@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# GPU-proxy retrieval/reranking (--mteb-gpu-proxy).
+# GPU-proxy evaluation (--mteb-gpu-proxy): retrieval/reranking plus classification.
 #
 # Default: automatic embedding shard GPUs from --device + automatic batch bump.
 #
@@ -25,7 +25,7 @@
 #   watch -n2 "cat results/gpu_proxy_*/run_progress.json 2>/dev/null | tail -1"
 #
 # Notes:
-#   - --layer-spec-workers 1 keeps retrieval proxy scoring on CUDA; >1 forces CPU for proxy.
+#   - --layer-spec-workers 1 keeps proxy scoring on CUDA; >1 forces CPU for proxy.
 #   - Set EMBEDDING_PRECOMPUTE_DEVICES to pass --embedding-precompute-devices (manual list).
 #   - Set NO_AUTO_EMBEDDING_BATCH=1 to pass --no-auto-embedding-batch (exact --batch-size).
 set -euo pipefail

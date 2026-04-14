@@ -47,7 +47,8 @@ Key design points
   workers force CPU for the store-backed encoder).
 * ``--mteb-gpu-proxy``: for **Retrieval** and **Reranking** (full ``MTEB(eng, v2)`` and any
   other run), score with dense GPU (or CPU) similarity plus MTEB's own ``pytrec_eval`` metric
-  stack; other task types still use ``mteb.evaluate`` with the HDF5-backed encoder.
+  stack. ``Classification`` tasks use a GPU logistic-regression proxy on cached vectors when
+  CUDA is available; other task types still use ``mteb.evaluate`` with the HDF5-backed encoder.
 """
 
 from __future__ import annotations
@@ -72,8 +73,10 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 import mteb
+from datasets import Dataset, DatasetDict
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.mteb_hf_hub_file_cache import patch_mteb_hub_file_cache
 
@@ -740,7 +743,7 @@ def _filter_by_max_samples(tasks, max_samples: int) -> List:
 
 
 # ══════════════════════════════════════════════════════════════════════════ #
-#  Text extraction helpers (test split)                                      #
+#  Text extraction helpers (nested splits)                                   #
 # ══════════════════════════════════════════════════════════════════════════ #
 
 def _resolve_dataset(task):
@@ -767,17 +770,29 @@ def _unique_nonempty_stripped(strings: List[str]) -> List[str]:
     return out
 
 
+def _iter_leaf_datasets(dataset_like):
+    """Yield HuggingFace leaf datasets from nested dict / DatasetDict containers."""
+    if isinstance(dataset_like, Dataset):
+        yield dataset_like
+        return
+    if isinstance(dataset_like, DatasetDict):
+        for value in dataset_like.values():
+            yield from _iter_leaf_datasets(value)
+        return
+    if isinstance(dataset_like, dict) or hasattr(dataset_like, "values"):
+        try:
+            values = list(dataset_like.values())
+        except Exception:
+            values = []
+        if values:
+            for value in values:
+                yield from _iter_leaf_datasets(value)
+        return
+
+
 def extract_all_texts(task) -> List[str]:
-    """Extract all unique texts from the test split."""
-    dataset = _resolve_dataset(task)
+    """Extract all unique texts needed by the task, including nested splits."""
     task_type = task.metadata.type
-    split_name = "test"
-    if split_name not in dataset:
-        split_name = list(dataset.keys())[0]
-
-    val_data = dataset[split_name]
-    data_dict = val_data.to_dict() if hasattr(val_data, "to_dict") else dict(val_data)
-
     raw: List[str] = []
 
     def _add(items):
@@ -787,25 +802,15 @@ def extract_all_texts(task) -> List[str]:
             elif item:
                 raw.append(str(item))
 
-    if task_type in ("Classification", "MultilabelClassification"):
-        for col in ("text", "texts", "sentence", "content"):
-            if col in data_dict:
-                _add(data_dict[col])
-                break
+    if task_type in ("Retrieval", "Reranking"):
+        dataset = _resolve_dataset(task)
+        split_name = "test"
+        if split_name not in dataset:
+            split_name = list(dataset.keys())[0]
 
-    elif task_type in ("STS", "PairClassification", "BitextMining"):
-        for col in ("sentence1", "sentence2"):
-            if col in data_dict:
-                _add(data_dict[col])
+        val_data = dataset[split_name]
+        data_dict = val_data.to_dict() if hasattr(val_data, "to_dict") else dict(val_data)
 
-    elif task_type == "Clustering":
-        for col in ("sentences", "text", "texts"):
-            if col in data_dict:
-                _add(data_dict[col])
-                break
-
-    elif task_type in ("Retrieval", "Reranking"):
-        # queries
         queries = data_dict.get("queries", {})
         if isinstance(queries, dict):
             raw.extend(str(v) for v in queries.values() if v)
@@ -814,14 +819,36 @@ def extract_all_texts(task) -> List[str]:
                 if col in queries.column_names:
                     raw.extend(str(t) for t in queries[col] if t)
                     break
-        # corpus (HF Dataset or dict — must match mteb._corpus_to_dict, not a single column)
         corpus = data_dict.get("corpus") or dataset.get("corpus", {})
         raw.extend(iter_retrieval_corpus_passages(corpus))
+        return _unique_nonempty_stripped(raw)
 
-    else:
-        for col in ("text", "sentence1", "sentence2", "sentences"):
-            if col in data_dict:
-                _add(data_dict[col])
+    for leaf in _iter_leaf_datasets(task.dataset):
+        if not hasattr(leaf, "to_dict"):
+            continue
+        data_dict = leaf.to_dict()
+
+        if task_type in ("Classification", "MultilabelClassification"):
+            for col in ("text", "texts", "sentence", "content"):
+                if col in data_dict:
+                    _add(data_dict[col])
+                    break
+
+        elif task_type in ("STS", "PairClassification", "BitextMining"):
+            for col in ("sentence1", "sentence2"):
+                if col in data_dict:
+                    _add(data_dict[col])
+
+        elif task_type == "Clustering":
+            for col in ("sentences", "text", "texts"):
+                if col in data_dict:
+                    _add(data_dict[col])
+                    break
+
+        else:
+            for col in ("text", "sentence1", "sentence2", "sentences"):
+                if col in data_dict:
+                    _add(data_dict[col])
 
     return _unique_nonempty_stripped(raw)
 
@@ -2307,7 +2334,8 @@ def main():
         help=(
             "Use precomputed embeddings instead of mteb.evaluate encoding: dense GPU "
             "similarity for Retrieval/Reranking; STS/PairClassification (GPU cosines + "
-            "MTEB metrics); Classification/Multilabel (sklearn on cached vectors). "
+            "MTEB metrics); Classification tasks use a GPU logistic-regression proxy on cached "
+            "vectors when CUDA is available. Multilabel classification still uses cached vectors. "
             "BitextMining, Summarization, Clustering, Zero-shot, etc. still call mteb.evaluate. "
             "With --layer-spec-workers > 1, retrieval proxy matmul uses CPU."
         ),
