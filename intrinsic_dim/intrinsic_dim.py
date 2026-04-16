@@ -46,7 +46,7 @@ def compute_intrinsic_dim_global(data, estimator_names=None, verbose=False):
             results[f'dim_{name}'] = dim
             results[f'time_{name}'] = end_time - start_time
             if verbose:
-                print(f"Dimension: {results[f'dim_mean_{name}']:.2f}, time taken: {end_time - start_time:.3f} seconds")
+                print(f"Dimension: {results[f'dim_{name}']:.2f}, time taken: {end_time - start_time:.3f} seconds")
 
         except Exception as e:
             print(f"Error computing {name}: {e}")
@@ -56,7 +56,8 @@ def compute_intrinsic_dim_global(data, estimator_names=None, verbose=False):
 
 
 def compute_intrinsic_dim_local(data, estimator_names=None,
-                                n_neighbors=100, n_jobs=1, verbose=False):
+                                n_neighbors=100, n_jobs=1,
+                                return_pointwise_dims=False, verbose=False):
     """
     Compute local intrinsic dimension estimates using different estimators.
 
@@ -96,6 +97,7 @@ def compute_intrinsic_dim_local(data, estimator_names=None,
         estimator_names = ['MLE', 'TLE', 'MOM']
 
     results = {}
+    pointwise_dims = {}
 
     for name in estimator_names:
         if verbose:
@@ -122,6 +124,8 @@ def compute_intrinsic_dim_local(data, estimator_names=None,
                 f'dim_q95_{name}': np.percentile(dims, 95),
                 f'time_{name}': end_time - start_time
             })
+            if return_pointwise_dims:
+                pointwise_dims[name] = dims
 
             if verbose:
                 print(f"Dimension: {results[f'dim_mean_{name}']:.2f}, time taken: {end_time - start_time:.3f} seconds")
@@ -130,4 +134,7 @@ def compute_intrinsic_dim_local(data, estimator_names=None,
             print(f"Error computing {name}: {e}")
             results[f'time_{name}'] = time.time() - start_time
 
-    return results
+    if return_pointwise_dims:
+        return results, pointwise_dims
+    else:
+        return results
