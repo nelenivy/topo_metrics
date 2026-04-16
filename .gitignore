@@ -1,7 +1,16 @@
 # outputs
+results/
 **/train_trace
 
-# cache
+# cache and local editor files
+.vscode/
+__pycache__/
 **/__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 **/catboost_info
 **/.ipynb_checkpoints
