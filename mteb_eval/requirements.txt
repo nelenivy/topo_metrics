@@ -1,0 +1,26 @@
+# Minimal environment for mteb_eval.
+#
+# mteb will pull its own declared dependencies (for example:
+# sentence-transformers, pytrec-eval-terrier, rich, pydantic, polars, etc.).
+# The packages below cover the code in this folder plus the lazy intrinsic-dim
+# helpers that unsup_metrics imports.
+
+mteb==1.39.7
+datasets==3.6.0
+transformers==5.5.4
+torch==2.11.0
+numpy==1.26.4
+scipy==1.17.0
+scikit-learn==1.8.0
+scikit-dimension==0.3.4
+tqdm==4.67.1
+pandas==1.5.0
+h5py
+cvxpy
+ripser
+
+# Optional extras:
+# ripserplusplus==1.1.3  # faster Ripser backend; needed for src/topology.py / --include-ph-dim
+# torchph==0.1.1         # GPU PH-dim helper in src/topology.py
+# hydra-core==1.3.2      # intrinsic_dim CLI scripts
+# omegaconf==2.3.0       # intrinsic_dim CLI scripts
