@@ -4,17 +4,25 @@ Consensus Laplacian prior + pairwise oracle-gap (Algorithms 2 & 3).
 
 Defaults match ``run_unsup_eval.py`` layout:
   - ``--output-dir`` default ``./results/unsup_eval``
-  - HDF5 cache default ``OUTPUT_DIR/embedding_cache``
+  - HDF5 cache default ``OUTPUT_DIR/embedding_cache`` (or ``REUSE_RUN_DIR/embedding_cache``)
 
 Metrics and diagnostics are written under ``OUTPUT_DIR / METRICS_SUBDIR /``
-(default ``.../oracle_gap/``). This script **never** opens or updates
-``master_results.csv`` (that file belongs solely to ``run_unsup_eval.py``);
-only the shared ``embedding_cache/`` under ``OUTPUT_DIR`` is reused.
+(default ``.../oracle_gap/``), including ``oracle_gap_pairwise_agg.csv`` /
+``oracle_gap_by_task.csv`` (mean, std, quantiles over tasks) and
+``oracle_gap_local_stats_agg.csv`` / ``oracle_gap_local_by_task.csv`` for pooled
+local score columns. This script does **not** read or write
+``master_results.csv`` (that file is only produced by ``run_unsup_eval.py``).
+HDF5 embedding cache defaults to ``OUTPUT_DIR/embedding_cache`` or, with
+``--reuse-run-dir``, ``REUSE_RUN_DIR/embedding_cache``.
+
+Logging: ``--log-level`` overrides ``-v`` counts; structured lines use
+``[oracle_gap] step=…``. Optional tqdm bars: ``--progress`` / ``--no-progress``.
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 import gc
 import importlib.util
 import json
@@ -61,6 +69,23 @@ try:
     import pandas as pd
 except ImportError as e:  # pragma: no cover
     raise SystemExit("run_oracle_gap_consensus requires pandas") from e
+
+try:
+    from tqdm import tqdm as _tqdm_cls
+except ImportError:  # pragma: no cover
+    _tqdm_cls = None
+
+
+def _pbar(
+    iterable,
+    *,
+    enabled: bool,
+    **kwargs: Any,
+):
+    """tqdm when enabled and installed; otherwise plain iteration."""
+    if not enabled or _tqdm_cls is None:
+        return iterable
+    return _tqdm_cls(iterable, **kwargs)
 
 # Fork-pool workers inherit these (set in main before Pool); do not pickle large arrays.
 _OG_EMBS: Dict[str, np.ndarray] = {}
@@ -129,22 +154,148 @@ def _flatten_stats(prefix: str, stats: Dict[str, float]) -> Dict[str, float]:
     return {f"{prefix}{k}": v for k, v in stats.items()}
 
 
+def _quantile_agg(q: float):
+    """Finite-sample quantile for pandas NamedAgg (avoids lambda closure bugs)."""
+
+    def _inner(series: "pd.Series") -> float:
+        a = np.asarray(series, dtype=np.float64)
+        a = a[np.isfinite(a)]
+        if not a.size:
+            return float("nan")
+        return float(np.quantile(a, q))
+
+    return _inner
+
+
+def _pandas_group_numeric_stats(
+    df: "pd.DataFrame",
+    keys: List[str],
+    value_cols: List[str],
+    *,
+    over_suffix: str,
+) -> "pd.DataFrame":
+    """
+    Per-group summaries of numeric columns: mean, std, min, q05…q95, max
+    (same spirit as ``local_score_stats`` plus q10 / q90).
+
+    Column names: ``{col}_mean{over_suffix}``, ``{col}_q05{over_suffix}``, …
+    ``over_suffix`` is '' or e.g. ``_over_pairs`` for task-level exports.
+    """
+    if df.empty or not value_cols:
+        return df.loc[:, list(keys)].drop_duplicates().reset_index(drop=True)
+    spec: Dict[str, Any] = {}
+    suf = over_suffix
+    for c in value_cols:
+        spec[f"{c}_mean{suf}"] = pd.NamedAgg(column=c, aggfunc="mean")
+        spec[f"{c}_std{suf}"] = pd.NamedAgg(column=c, aggfunc="std")
+        spec[f"{c}_min{suf}"] = pd.NamedAgg(column=c, aggfunc="min")
+        spec[f"{c}_q05{suf}"] = pd.NamedAgg(column=c, aggfunc=_quantile_agg(0.05))
+        spec[f"{c}_q10{suf}"] = pd.NamedAgg(column=c, aggfunc=_quantile_agg(0.10))
+        spec[f"{c}_q25{suf}"] = pd.NamedAgg(column=c, aggfunc=_quantile_agg(0.25))
+        spec[f"{c}_median{suf}"] = pd.NamedAgg(column=c, aggfunc=_quantile_agg(0.50))
+        spec[f"{c}_q75{suf}"] = pd.NamedAgg(column=c, aggfunc=_quantile_agg(0.75))
+        spec[f"{c}_q90{suf}"] = pd.NamedAgg(column=c, aggfunc=_quantile_agg(0.90))
+        spec[f"{c}_q95{suf}"] = pd.NamedAgg(column=c, aggfunc=_quantile_agg(0.95))
+        spec[f"{c}_max{suf}"] = pd.NamedAgg(column=c, aggfunc="max")
+    return df.groupby(keys, as_index=False, dropna=False).agg(**spec)
+
+
+def _bandwidth_cv_curve_for_export(res: PairwiseOracleGapResult) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Per-row adaptive CV stores ``cv_scores`` / ``eps_grids`` as (n, M).
+    For a single diagnostic curve, aggregate over points (nanmean along axis 0).
+    """
+    cv = np.asarray(res.cv_scores, dtype=np.float64)
+    eg = np.asarray(res.eps_grids, dtype=np.float64)
+    if cv.ndim == 2:
+        cv_m = np.nanmean(cv, axis=0)
+    else:
+        cv_m = cv.ravel()
+    if eg.ndim == 2:
+        eps_m = np.nanmean(eg, axis=0)
+    else:
+        eps_m = eg.ravel()
+    m = min(int(cv_m.shape[0]), int(eps_m.shape[0]))
+    return eps_m[:m], cv_m[:m]
+
+
 def _write_run_info(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
 
 
-def _setup_logging(verbose: int) -> None:
-    level = logging.WARNING
-    if verbose >= 2:
+class _IncrementalDictWriter:
+    """Append dict rows to CSV; header written on first row (fieldnames grow rarely)."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.fieldnames: Optional[List[str]] = None
+
+    def write_row(self, row: Dict[str, Any]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self.fieldnames is None:
+            self.fieldnames = list(row.keys())
+        else:
+            for k in row:
+                if k not in self.fieldnames:
+                    self.fieldnames.append(k)
+        exists_nonempty = self.path.exists() and self.path.stat().st_size > 0
+        with self.path.open("a", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(
+                f,
+                fieldnames=self.fieldnames,
+                extrasaction="ignore",
+                restval="",
+            )
+            if not exists_nonempty:
+                w.writeheader()
+            out = {}
+            for k in self.fieldnames:
+                v = row.get(k, "")
+                if v is None:
+                    out[k] = ""
+                elif isinstance(v, (np.floating, float)) and not np.isfinite(v):
+                    out[k] = ""
+                elif isinstance(v, np.floating):
+                    out[k] = float(v)
+                elif isinstance(v, np.integer):
+                    out[k] = int(v)
+                else:
+                    out[k] = v
+            w.writerow(out)
+
+
+def _setup_logging(*, verbose: int, log_level: Optional[str]) -> None:
+    if log_level:
+        level = getattr(logging, log_level.upper(), logging.INFO)
+    elif verbose >= 2:
         level = logging.DEBUG
-    elif verbose == 1:
+    elif verbose >= 1:
         level = logging.INFO
+    else:
+        level = logging.WARNING
     logging.basicConfig(
         level=level,
         format="%(asctime)s %(levelname)s %(name)s — %(message)s",
         force=True,
     )
+
+
+def _stage(
+    step: str,
+    message: str,
+    *,
+    task: Optional[str] = None,
+    pooling: Optional[str] = None,
+) -> None:
+    """Structured INFO line so logs are easy to grep (step=…)."""
+    bits = [f"step={step}"]
+    if task is not None:
+        bits.append(f"task={task}")
+    if pooling is not None:
+        bits.append(f"pooling={pooling}")
+    tail = " ".join(bits)
+    logger.info("[oracle_gap] %s — %s", tail, message)
 
 
 def main() -> None:
@@ -211,7 +362,26 @@ def main() -> None:
     parser.add_argument(
         "--embedding-cache-dir",
         default=None,
-        help="HDF5 cache dir (default: OUTPUT_DIR/embedding_cache).",
+        help="HDF5 cache dir (default: OUTPUT_DIR/embedding_cache or REUSE_RUN_DIR/embedding_cache).",
+    )
+    parser.add_argument(
+        "--reuse-run-dir",
+        default=None,
+        metavar="DIR",
+        help=(
+            "Directory from a prior run_unsup_eval / gpu_proxy job (contains embedding_cache/). "
+            "If set and --embedding-cache-dir is omitted, embeddings are read/written under "
+            "DIR/embedding_cache."
+        ),
+    )
+    parser.add_argument(
+        "--no-incremental-csv",
+        action="store_true",
+        default=False,
+        help=(
+            "Write oracle_gap_pairwise/local and diagnostics CSVs only once per stage "
+            "(legacy). Default is to flush each pairwise result to disk immediately."
+        ),
     )
     parser.add_argument(
         "--device",
@@ -233,9 +403,75 @@ def main() -> None:
     parser.add_argument("--torch-dtype", default=None, metavar="DTYPE")
     parser.add_argument("--r-consensus", type=int, default=8)
     parser.add_argument("--r-principal", type=int, default=8)
-    parser.add_argument("--knn-k", type=int, default=128)
+    parser.add_argument("--knn-k", type=int, default=24)
     parser.add_argument("--bandwidth-grid-m", type=int, default=24)
-    parser.add_argument("--principal-maxiter", type=int, default=2000)
+    parser.add_argument(
+        "--sigma-clip",
+        type=float,
+        default=3.0,
+        help=(
+            "Adaptive per-row fiber: zero Gaussian weights beyond "
+            "max(kNN_k distance, sigma_clip * sigma_i) (default: 3)."
+        ),
+    )
+    parser.add_argument(
+        "--density-normalize",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Directed fiber kernel W: divide each nonzero by "
+            "q_out[i]^α · q_in[j]^α before row-normalizing to T (default: on). "
+            "α is --density-alpha."
+        ),
+    )
+    parser.add_argument(
+        "--density-alpha",
+        type=float,
+        default=1.0,
+        help="Exponent α for directed marginal rescale (default: 1). α≈0 skips rescale.",
+    )
+    parser.add_argument(
+        "--smooth-bw",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Adaptive: median-smooth selected per-row bandwidth over kNN (default: on).",
+    )
+    parser.add_argument(
+        "--fiber-kernel",
+        choices=["gaussian", "epanechnikov"],
+        default="gaussian",
+        help=(
+            "Ignored for the adaptive Gaussian+cutoff path (kept for CLI compatibility). "
+            "Legacy scalar-eps code would use gaussian vs epanechnikov."
+        ),
+    )
+    parser.add_argument(
+        "--principal-maxiter",
+        type=int,
+        default=12000,
+        help="ARPACK maxiter for Algorithm 3 (eigsh on I-T^T T); retries/LOBPCG also used.",
+    )
+    parser.add_argument(
+        "--principal-device",
+        type=str,
+        default=None,
+        metavar="DEV",
+        help=(
+            "Algorithm 3 matvec device: unset or cpu = SciPy CPU (default). "
+            "cuda / cuda:0 / cuda:1 = CuPy CSR on that GPU if cupy is installed "
+            "(pip install cupy-cuda12x matching CUDA); else falls back to CPU."
+        ),
+    )
+    parser.add_argument(
+        "--principal-blas-threads",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "For the CPU SciPy path only: temporarily set OMP/MKL/OpenBLAS thread "
+            "env vars during eigsh. Default caps at min(32, cpu_count). Use 0 to leave env unchanged."
+        ),
+    )
     parser.add_argument("--min-n", type=int, default=40)
     parser.add_argument(
         "--max-n",
@@ -266,10 +502,22 @@ def main() -> None:
         "--verbose",
         action="count",
         default=0,
-        help="-v INFO, -vv DEBUG (progress + diagnostics).",
+        help="Logging: -v INFO, -vv DEBUG (ignored if --log-level is set).",
+    )
+    parser.add_argument(
+        "--log-level",
+        default=None,
+        choices=["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"],
+        help="Set logging level explicitly (overrides -v count).",
+    )
+    parser.add_argument(
+        "--progress",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="tqdm progress for tasks, per-model I/O, and pairwise jobs (default: on).",
     )
     args = parser.parse_args()
-    _setup_logging(int(args.verbose))
+    _setup_logging(verbose=int(args.verbose), log_level=args.log_level)
 
     if args.device is None:
         try:
@@ -290,11 +538,15 @@ def main() -> None:
     diag_dir = metrics_dir / "diagnostics"
     diag_dir.mkdir(parents=True, exist_ok=True)
 
-    cache_dir = (
-        Path(args.embedding_cache_dir).resolve()
-        if args.embedding_cache_dir
-        else (out_root / "embedding_cache")
-    )
+    incremental = not bool(args.no_incremental_csv)
+    reuse_run_dir = Path(args.reuse_run_dir).resolve() if args.reuse_run_dir else None
+
+    if args.embedding_cache_dir:
+        cache_dir = Path(args.embedding_cache_dir).resolve()
+    elif reuse_run_dir is not None:
+        cache_dir = (reuse_run_dir / "embedding_cache").resolve()
+    else:
+        cache_dir = (out_root / "embedding_cache").resolve()
 
     torch_dtype = _normalize_torch_dtype_str(args.torch_dtype)
     if torch_dtype is None:
@@ -318,13 +570,14 @@ def main() -> None:
         {
             "argv": sys.argv,
             "note": (
-                "Oracle-gap run: does not read or write master_results.csv "
-                "(that file is only produced by run_unsup_eval.py). "
-                "Same output_dir shares embedding_cache/ only."
+                "Oracle-gap: does not read or write master_results.csv. "
+                "Default incremental CSV flush per pair."
             ),
             "output_dir": str(out_root),
             "metrics_dir": str(metrics_dir),
             "embedding_cache_dir": str(cache_dir),
+            "reuse_run_dir": str(reuse_run_dir) if reuse_run_dir else None,
+            "incremental_csv": incremental,
             "models": models,
             "poolings": list(args.poolings),
             "layer_spec": args.layer_spec,
@@ -332,46 +585,105 @@ def main() -> None:
             "r_principal": args.r_principal,
             "knn_k": args.knn_k,
             "bandwidth_grid_m": args.bandwidth_grid_m,
+            "sigma_clip": float(args.sigma_clip),
+            "density_normalize": bool(args.density_normalize),
+            "density_alpha": float(args.density_alpha),
+            "smooth_bw": bool(args.smooth_bw),
+            "fiber_kernel": args.fiber_kernel,
             "principal_maxiter": args.principal_maxiter,
+            "principal_device": args.principal_device,
+            "principal_blas_threads": args.principal_blas_threads,
             "pair_workers": int(args.pair_workers),
             "run_alg2": run_alg2,
             "run_alg3": run_alg3,
             "platform": platform.platform(),
+            "log_level": logging.getLevelName(logger.getEffectiveLevel()),
+            "progress_bars": bool(args.progress),
         },
     )
+    use_progress = bool(args.progress)
     logger.info("Output root %s | metrics %s | cache %s", out_root, metrics_dir, cache_dir)
+    _stage(
+        "init",
+        f"device={args.device} batch_size={bs} log_level={logging.getLevelName(logger.getEffectiveLevel())} "
+        f"progress_bars={use_progress}",
+    )
 
+    _stage("load_task_list", f"resolving tasks (task_set={args.task_set!r})")
     tasks = load_tasks(
         task_set=args.task_set,
         tasks=args.tasks,
         task_types=args.task_types,
         max_samples=args.max_samples,
     )
+    _stage("load_task_list", f"loaded {len(tasks)} task(s)")
 
     pair_csv = metrics_dir / "oracle_gap_pairwise.csv"
     local_csv = metrics_dir / "oracle_gap_local_stats.csv"
     agg_csv = metrics_dir / "oracle_gap_pairwise_agg.csv"
     by_task_csv = metrics_dir / "oracle_gap_by_task.csv"
+    local_agg_csv = metrics_dir / "oracle_gap_local_stats_agg.csv"
+    local_by_task_csv = metrics_dir / "oracle_gap_local_by_task.csv"
     cv_all: List[Dict[str, Any]] = []
     pre_all: List[Dict[str, Any]] = []
 
     pair_rows: List[Dict[str, Any]] = []
     local_rows: List[Dict[str, Any]] = []
 
+    diag_cv_path = diag_dir / "bandwidth_cv_curves.csv"
+    diag_pre_path = diag_dir / "pair_preprocess.csv"
+    cv_writer: Optional[_IncrementalDictWriter] = None
+    pre_writer: Optional[_IncrementalDictWriter] = None
+    if incremental:
+        for pth in (diag_cv_path, diag_pre_path):
+            if pth.exists():
+                pth.unlink()
+        cv_writer = _IncrementalDictWriter(diag_cv_path)
+        pre_writer = _IncrementalDictWriter(diag_pre_path)
+
     for pooling in args.poolings:
         logger.info("=== Pooling %s ===", pooling)
+        _stage("pooling_pass", f"starting {len(tasks)} task(s) for this pooling", pooling=pooling)
         pair_rows.clear()
         local_rows.clear()
 
-        for task in tasks:
+        suffix = f"_{pooling}" if len(args.poolings) > 1 else ""
+        p_out = pair_csv.with_name(pair_csv.stem + suffix + pair_csv.suffix)
+        l_out = local_csv.with_name(local_csv.stem + suffix + local_csv.suffix)
+        a_out = agg_csv.with_name(agg_csv.stem + suffix + agg_csv.suffix)
+        t_out = by_task_csv.with_name(by_task_csv.stem + suffix + by_task_csv.suffix)
+        la_out = local_agg_csv.with_name(local_agg_csv.stem + suffix + local_agg_csv.suffix)
+        lt_out = local_by_task_csv.with_name(local_by_task_csv.stem + suffix + local_by_task_csv.suffix)
+
+        pair_writer: Optional[_IncrementalDictWriter] = None
+        local_writer: Optional[_IncrementalDictWriter] = None
+        if incremental:
+            for pth in (p_out, l_out):
+                if pth.exists():
+                    pth.unlink()
+            pair_writer = _IncrementalDictWriter(p_out)
+            local_writer = _IncrementalDictWriter(l_out)
+
+        task_iter = _pbar(
+            tasks,
+            enabled=use_progress,
+            desc=f"tasks [{pooling}]",
+            unit="task",
+            smoothing=0.0,
+        )
+        for task in task_iter:
             task_name = task.metadata.name
+            if use_progress and hasattr(task_iter, "set_postfix"):
+                task_iter.set_postfix(task=task_name[:40], refresh=False)
             try:
+                _stage("mteb_load_data", "calling task.load_data()", task=task_name, pooling=pooling)
                 task.load_data()
             except Exception as e:
                 logger.warning("Skip task %s (load_data): %s", task_name, e)
                 continue
 
             try:
+                _stage("mteb_texts", "extract_all_texts()", task=task_name, pooling=pooling)
                 all_texts = extract_all_texts(task)
             except Exception as e:
                 logger.warning("Skip task %s (texts): %s", task_name, e)
@@ -382,7 +694,13 @@ def main() -> None:
 
             n_layers_by_model: Dict[str, int] = {}
             spec_by_model: Dict[str, Any] = {}
-            for model_name in models:
+            for model_name in _pbar(
+                models,
+                enabled=use_progress,
+                desc=f"probe [{task_name}]",
+                unit="model",
+                leave=False,
+            ):
                 if not pooling_supported(model_name, pooling):
                     logger.info(
                         "Skip model %s: pooling %s — %s",
@@ -419,9 +737,22 @@ def main() -> None:
                 logger.warning("Task %s: fewer than 2 usable models; skip", task_name)
                 continue
 
+            _stage(
+                "encoders_ready",
+                f"{len(active)} model(s) after probe | corpus texts={len(all_texts)}",
+                task=task_name,
+                pooling=pooling,
+            )
+
             stores: Dict[str, Any] = {}
             try:
-                for model_name in active:
+                for model_name in _pbar(
+                    active,
+                    enabled=use_progress,
+                    desc=f"cache [{task_name}]",
+                    unit="model",
+                    leave=False,
+                ):
                     nl = n_layers_by_model[model_name]
                     spec = spec_by_model[model_name]
                     st, _mat = _load_store_matrix(
@@ -448,9 +779,22 @@ def main() -> None:
                     logger.warning("Task %s: only n=%d aligned texts; skip", task_name, n)
                     continue
 
+                _stage(
+                    "aligned_corpus",
+                    f"n={n} aligned texts across models",
+                    task=task_name,
+                    pooling=pooling,
+                )
+
                 embs: Dict[str, np.ndarray] = {}
                 consensus_list: List[np.ndarray] = []
-                for model_name in active:
+                for model_name in _pbar(
+                    active,
+                    enabled=use_progress,
+                    desc=f"matrices [{task_name}]",
+                    unit="model",
+                    leave=False,
+                ):
                     view = stores[model_name].as_pooling(pooling)
                     spec = spec_by_model[model_name]
                     nl = n_layers_by_model[model_name]
@@ -466,8 +810,15 @@ def main() -> None:
                     knn_k=int(args.knn_k),
                     bandwidth_grid_M=int(args.bandwidth_grid_m),
                     principal_maxiter=int(args.principal_maxiter),
+                    principal_device=args.principal_device,
+                    principal_blas_threads=args.principal_blas_threads,
                     run_alg2=run_alg2,
                     run_alg3=run_alg3,
+                    fiber_kernel=str(args.fiber_kernel),
+                    sigma_clip=float(args.sigma_clip),
+                    smooth_bw=bool(args.smooth_bw),
+                    density_normalize=bool(args.density_normalize),
+                    density_alpha=float(args.density_alpha),
                 )
 
                 eff_pw = max(1, int(args.pair_workers))
@@ -481,42 +832,21 @@ def main() -> None:
                     )
                     eff_pw = 1
 
-                results_list: List[Tuple[str, str, PairwiseOracleGapResult, float]] = []
-                if eff_pw <= 1:
-                    for model_u, model_v in pairs:
-                        logger.info(
-                            "Task %s | pair %s → %s | n=%d | pooling=%s",
-                            task_name,
-                            model_u,
-                            model_v,
-                            n,
-                            pooling,
-                        )
-                        t0 = time.perf_counter()
-                        res = compute_pairwise_oracle_gap(
-                            embs[model_u], embs[model_v], consensus_list, **kw
-                        )
-                        dt = time.perf_counter() - t0
-                        results_list.append((model_u, model_v, res, dt))
-                        logger.info("  done in %.2fs | alg2_Q_mean=%.6g alg3_Q=%.6g", dt, res.alg2_Q_mean, res.alg3_Q_rank_r)
-                else:
-                    global _OG_EMBS, _OG_CL, _OG_KW
-                    _OG_EMBS = embs
-                    _OG_CL = consensus_list
-                    _OG_KW = kw
-                    logger.info(
-                        "Task %s | %d pairs | fork pool workers=%d",
-                        task_name,
-                        len(pairs),
-                        eff_pw,
-                    )
-                    ctx = mp.get_context("fork")
-                    with ctx.Pool(processes=eff_pw) as pool:
-                        raw = pool.map(_worker_compute_pair, pairs)
-                    for (mu, mv, res) in raw:
-                        results_list.append((mu, mv, res, 0.0))
+                _stage(
+                    "pairwise_oracle_gap",
+                    f"{len(pairs)} ordered pairs | pair_workers={eff_pw}",
+                    task=task_name,
+                    pooling=pooling,
+                )
 
-                for model_u, model_v, res, elapsed in results_list:
+                def _emit_pair(
+                    model_u: str,
+                    model_v: str,
+                    res: PairwiseOracleGapResult,
+                    elapsed: float,
+                    *,
+                    record_seconds: bool,
+                ) -> None:
                     row: Dict[str, Any] = {
                         "task_name": task_name,
                         "model_U": model_u,
@@ -532,7 +862,7 @@ def main() -> None:
                         "run_alg2": int(run_alg2),
                         "run_alg3": int(run_alg3),
                     }
-                    if eff_pw <= 1:
+                    if record_seconds:
                         row["seconds"] = float(elapsed)
                     for j, q in enumerate(res.alg2_Q_per_mode):
                         row[f"alg2_Q_mode{j + 1}"] = q
@@ -543,31 +873,42 @@ def main() -> None:
                     for k, v in res.diagnostics.items():
                         row[f"diag_{k}"] = v
                     pair_rows.append(row)
+                    if incremental and pair_writer is not None:
+                        pair_writer.write_row(row)
 
-                    for gi, eps_v in enumerate(np.asarray(res.eps_grid).ravel()):
-                        cv_all.append(
-                            {
-                                "task_name": task_name,
-                                "model_U": model_u,
-                                "model_V": model_v,
-                                "pooling": pooling,
-                                "layer_spec": args.layer_spec,
-                                "grid_index": gi,
-                                "eps": float(eps_v),
-                                "cv_loss": float(res.cv_scores[gi]),
-                            }
-                        )
-
-                    pre_all.append(
+                    eps_curve, cv_curve = _bandwidth_cv_curve_for_export(res)
+                    cv_batch = [
                         {
                             "task_name": task_name,
                             "model_U": model_u,
                             "model_V": model_v,
                             "pooling": pooling,
                             "layer_spec": args.layer_spec,
-                            **{f"diag_{k}": v for k, v in res.diagnostics.items()},
+                            "grid_index": gi,
+                            "eps": float(eps_v),
+                            "cv_loss": float(cv_curve[gi]),
+                            "cv_curve_agg": "mean_over_points",
                         }
-                    )
+                        for gi, eps_v in enumerate(eps_curve)
+                    ]
+                    if incremental and cv_writer is not None:
+                        for d in cv_batch:
+                            cv_writer.write_row(d)
+                    else:
+                        cv_all.extend(cv_batch)
+
+                    pre_row = {
+                        "task_name": task_name,
+                        "model_U": model_u,
+                        "model_V": model_v,
+                        "pooling": pooling,
+                        "layer_spec": args.layer_spec,
+                        **{f"diag_{k}": v for k, v in res.diagnostics.items()},
+                    }
+                    if incremental and pre_writer is not None:
+                        pre_writer.write_row(pre_row)
+                    else:
+                        pre_all.append(pre_row)
 
                     base_local = {
                         "task_name": task_name,
@@ -576,8 +917,9 @@ def main() -> None:
                         "pooling": pooling,
                         "layer_spec": args.layer_spec,
                     }
+                    local_batch: List[Dict[str, Any]] = []
                     for j, st in enumerate(res.local_stats_alg2):
-                        local_rows.append(
+                        local_batch.append(
                             {
                                 **base_local,
                                 "mode": f"alg2_consensus_mode{j + 1}",
@@ -585,13 +927,74 @@ def main() -> None:
                             }
                         )
                     if run_alg3 and res.local_stats_alg3:
-                        local_rows.append(
+                        local_batch.append(
                             {
                                 **base_local,
                                 "mode": "alg3_principal_rank_r",
                                 **_flatten_stats("", res.local_stats_alg3),
                             }
                         )
+                    for lr in local_batch:
+                        local_rows.append(lr)
+                        if incremental and local_writer is not None:
+                            local_writer.write_row(lr)
+
+                if eff_pw <= 1:
+                    pair_loop = _pbar(
+                        pairs,
+                        enabled=use_progress,
+                        desc=f"pairs [{task_name}]",
+                        unit="pair",
+                        leave=False,
+                    )
+                    for model_u, model_v in pair_loop:
+                        if use_progress and hasattr(pair_loop, "set_postfix"):
+                            pair_loop.set_postfix(
+                                U=model_u[:18],
+                                V=model_v[:18],
+                                refresh=False,
+                            )
+                        logger.info(
+                            "Task %s | pair %s → %s | n=%d | pooling=%s",
+                            task_name,
+                            model_u,
+                            model_v,
+                            n,
+                            pooling,
+                        )
+                        t0 = time.perf_counter()
+                        res = compute_pairwise_oracle_gap(
+                            embs[model_u], embs[model_v], consensus_list, **kw
+                        )
+                        dt = time.perf_counter() - t0
+                        logger.info("  done in %.2fs | alg2_Q_mean=%.6g alg3_Q=%.6g", dt, res.alg2_Q_mean, res.alg3_Q_rank_r)
+                        _emit_pair(model_u, model_v, res, dt, record_seconds=True)
+                else:
+                    global _OG_EMBS, _OG_CL, _OG_KW
+                    _OG_EMBS = embs
+                    _OG_CL = consensus_list
+                    _OG_KW = kw
+                    logger.info(
+                        "Task %s | %d pairs | fork pool workers=%d",
+                        task_name,
+                        len(pairs),
+                        eff_pw,
+                    )
+                    ctx = mp.get_context("fork")
+                    chunksize = max(1, len(pairs) // max(1, eff_pw * 8))
+                    with ctx.Pool(processes=eff_pw) as pool:
+                        imap_it = pool.imap(_worker_compute_pair, pairs, chunksize=chunksize)
+                        for (mu, mv, res) in _pbar(
+                            imap_it,
+                            enabled=use_progress,
+                            total=len(pairs),
+                            desc=f"pairs [{task_name}]",
+                            unit="pair",
+                            leave=False,
+                        ):
+                            _emit_pair(mu, mv, res, 0.0, record_seconds=False)
+
+                _stage("task_complete", "finished pairwise block for task", task=task_name, pooling=pooling)
 
             finally:
                 for st in stores.values():
@@ -601,21 +1004,23 @@ def main() -> None:
                         pass
                 gc.collect()
 
-        suffix = f"_{pooling}" if len(args.poolings) > 1 else ""
-        p_out = pair_csv.with_name(pair_csv.stem + suffix + pair_csv.suffix)
-        l_out = local_csv.with_name(local_csv.stem + suffix + local_csv.suffix)
-        a_out = agg_csv.with_name(agg_csv.stem + suffix + agg_csv.suffix)
-        t_out = by_task_csv.with_name(by_task_csv.stem + suffix + by_task_csv.suffix)
+        if not incremental:
+            if pair_rows:
+                pd.DataFrame(pair_rows).to_csv(p_out, index=False)
+                logger.info("Wrote %s (%d rows)", p_out, len(pair_rows))
+            else:
+                logger.warning("No rows for pooling=%s; skip %s", pooling, p_out)
 
-        if pair_rows:
-            pd.DataFrame(pair_rows).to_csv(p_out, index=False)
-            logger.info("Wrote %s (%d rows)", p_out, len(pair_rows))
+            if local_rows:
+                pd.DataFrame(local_rows).to_csv(l_out, index=False)
+                logger.info("Wrote %s (%d rows)", l_out, len(local_rows))
         else:
-            logger.warning("No rows for pooling=%s; skip %s", pooling, p_out)
-
-        if local_rows:
-            pd.DataFrame(local_rows).to_csv(l_out, index=False)
-            logger.info("Wrote %s (%d rows)", l_out, len(local_rows))
+            if pair_rows:
+                logger.info("Incremental pairwise CSV %s (%d rows)", p_out, len(pair_rows))
+            else:
+                logger.warning("No rows for pooling=%s; skip %s", pooling, p_out)
+            if local_rows:
+                logger.info("Incremental local stats %s (%d rows)", l_out, len(local_rows))
 
         if pair_rows:
             df = pd.DataFrame(pair_rows)
@@ -626,26 +1031,37 @@ def main() -> None:
                 for c in df.columns
                 if c not in skip and pd.api.types.is_numeric_dtype(df[c])
             ]
-            mean_df = df.groupby(keys, as_index=False)[num_cols].mean()
-            std_df = df.groupby(keys, as_index=False)[num_cols].std()
-            mean_df = mean_df.rename(columns={c: f"{c}_mean" for c in num_cols})
-            std_df = std_df.rename(columns={c: f"{c}_std" for c in num_cols})
-            mean_df.merge(std_df, on=keys).to_csv(a_out, index=False)
+            _pandas_group_numeric_stats(df, keys, num_cols, over_suffix="").to_csv(a_out, index=False)
             logger.info("Wrote %s", a_out)
 
-            t_mean = df.groupby("task_name", as_index=False)[num_cols].mean()
-            t_std = df.groupby("task_name", as_index=False)[num_cols].std()
-            t_mean = t_mean.rename(columns={c: f"{c}_mean_over_pairs" for c in num_cols})
-            t_std = t_std.rename(columns={c: f"{c}_std_over_pairs" for c in num_cols})
-            t_mean.merge(t_std, on="task_name").to_csv(t_out, index=False)
+            _pandas_group_numeric_stats(
+                df, ["task_name"], num_cols, over_suffix="_over_pairs"
+            ).to_csv(t_out, index=False)
             logger.info("Wrote %s", t_out)
 
-    if cv_all:
-        pd.DataFrame(cv_all).to_csv(diag_dir / "bandwidth_cv_curves.csv", index=False)
-        logger.info("Wrote %s (%d rows)", diag_dir / "bandwidth_cv_curves.csv", len(cv_all))
-    if pre_all:
-        pd.DataFrame(pre_all).to_csv(diag_dir / "pair_preprocess.csv", index=False)
-        logger.info("Wrote %s (%d rows)", diag_dir / "pair_preprocess.csv", len(pre_all))
+        if local_rows:
+            ldf = pd.DataFrame(local_rows)
+            lkeys = ["model_U", "model_V", "pooling", "layer_spec", "mode"]
+            lskip = set(lkeys) | {"task_name"}
+            lnum = [
+                c
+                for c in ldf.columns
+                if c not in lskip and pd.api.types.is_numeric_dtype(ldf[c])
+            ]
+            if lnum:
+                _pandas_group_numeric_stats(ldf, lkeys, lnum, over_suffix="").to_csv(la_out, index=False)
+                logger.info("Wrote %s", la_out)
+                _pandas_group_numeric_stats(
+                    ldf, ["task_name"], lnum, over_suffix="_over_task"
+                ).to_csv(lt_out, index=False)
+                logger.info("Wrote %s", lt_out)
+
+    if not incremental and cv_all:
+        pd.DataFrame(cv_all).to_csv(diag_cv_path, index=False)
+        logger.info("Wrote %s (%d rows)", diag_cv_path, len(cv_all))
+    if not incremental and pre_all:
+        pd.DataFrame(pre_all).to_csv(diag_pre_path, index=False)
+        logger.info("Wrote %s (%d rows)", diag_pre_path, len(pre_all))
     logger.info("Diagnostics directory: %s", diag_dir)
     logger.info("Done.")
 

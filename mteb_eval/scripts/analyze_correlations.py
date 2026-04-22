@@ -38,13 +38,26 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import sys
 import warnings
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 import numpy as np
 import pandas as pd
-from scipy.stats import pearsonr, spearmanr
+
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from src.corr_utils import (
+    build_correlation_views_vs_target,
+    compute_summary,
+    compute_summary_grouped,
+    ensure_task_type,
+    estimate_sign,
+    metric_columns,
+)
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -69,70 +82,6 @@ def find_latest_master_results(search_root: str) -> Path:
 
 
 # ══════════════════════════════════════════════════════════════════════════ #
-#  Helpers                                                                   #
-# ══════════════════════════════════════════════════════════════════════════ #
-
-def _metric_columns(df: pd.DataFrame) -> List[str]:
-    return [c for c in df.columns if c.startswith("metric_") and c != "metric_error"]
-
-
-def _ensure_task_type(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    if "task_type" not in out.columns:
-        out["task_type"] = "unknown"
-    else:
-        out["task_type"] = out["task_type"].fillna("unknown").astype(str)
-    return out
-
-
-def _safe_corr(x, y) -> Tuple[float, float, float, float]:
-    """Returns (spearman_r, spearman_p, pearson_r, pearson_p) safely."""
-    mask = ~(np.isnan(x) | np.isnan(y))
-    x, y = np.asarray(x)[mask], np.asarray(y)[mask]
-    if len(x) < 3:
-        return float("nan"), float("nan"), float("nan"), float("nan")
-    try:
-        s_r, s_p = spearmanr(x, y, nan_policy="omit")
-        p_r, p_p = pearsonr(x, y)
-        return float(s_r), float(s_p), float(p_r), float(p_p)
-    except Exception:
-        return float("nan"), float("nan"), float("nan"), float("nan")
-
-
-def _fisher_z_mean(corrs: List[float]) -> float:
-    """Fisher-z-transform mean of a list of correlations."""
-    clipped = np.clip(corrs, -0.9999, 0.9999)
-    return float(np.tanh(np.mean(np.arctanh(clipped))))
-
-
-def _estimate_sign(
-    df: pd.DataFrame, metric_col: str, scope: str = "per_task"
-) -> pd.Series:
-    """
-    Estimate the direction of metric_col w.r.t. mteb_score.
-
-    scope='global'   — single sign from global Spearman correlation
-    scope='per_task' — majority sign within each (task_name, model_name) group
-    """
-    sub = df.dropna(subset=[metric_col, "mteb_score"]).copy()
-
-    if scope == "global":
-        r, *_ = _safe_corr(sub[metric_col].values, sub["mteb_score"].values)
-        sign = 1 if (np.isnan(r) or r >= 0) else -1
-        return pd.Series(sign, index=sub.index)
-
-    def _group_sign(group):
-        r, *_ = _safe_corr(group[metric_col].values, group["mteb_score"].values)
-        return 1 if (np.isnan(r) or r >= 0) else -1
-
-    signs = sub.groupby(["task_name", "model_name"]).apply(_group_sign)
-    merged = sub[["task_name", "model_name"]].join(
-        signs.rename("sign"), on=["task_name", "model_name"]
-    )
-    return merged["sign"]
-
-
-# ══════════════════════════════════════════════════════════════════════════ #
 #  1. Correlation analysis                                                   #
 # ══════════════════════════════════════════════════════════════════════════ #
 
@@ -147,126 +96,12 @@ def build_correlation_views(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
     - per_task_type_pooled: Spearman/Pearson on all rows with a given task_type
     - per_task_type_fisher_mean: Fisher–z mean of per_dataset Spearman r's, per task_type
     """
-    metric_cols = _metric_columns(df)
-    df_valid = _ensure_task_type(df.dropna(subset=["mteb_score"]).copy())
-    df_valid["mteb_score"] = df_valid["mteb_score"].astype(float)
-
-    rows_all: List[dict] = []
-    rows_per_task: List[dict] = []
-    rows_per_model: List[dict] = []
-    rows_per_dataset: List[dict] = []
-    rows_per_tt_pooled: List[dict] = []
-
-    for col in metric_cols:
-        sub = df_valid.dropna(subset=[col])
-        if len(sub) == 0:
-            continue
-
-        # all
-        s_r, s_p, p_r, p_p = _safe_corr(sub[col].values, sub["mteb_score"].values)
-        rows_all.append(
-            dict(
-                metric=col,
-                spearman_r=s_r,
-                spearman_p=s_p,
-                pearson_r=p_r,
-                pearson_p=p_p,
-                n=len(sub),
-            )
-        )
-
-        # per_task (Fisher across datasets)
-        task_corrs: List[float] = []
-        for _, grp in sub.groupby("task_name"):
-            r, *_ = _safe_corr(grp[col].values, grp["mteb_score"].values)
-            if not np.isnan(r):
-                task_corrs.append(r)
-        mean_r = _fisher_z_mean(task_corrs) if task_corrs else float("nan")
-        rows_per_task.append(
-            dict(
-                metric=col,
-                spearman_r=mean_r,
-                spearman_p=float("nan"),
-                pearson_r=float("nan"),
-                pearson_p=float("nan"),
-                n_datasets=len(task_corrs),
-            )
-        )
-
-        # per_model
-        model_corrs: List[float] = []
-        for _, grp in sub.groupby("model_name"):
-            r, *_ = _safe_corr(grp[col].values, grp["mteb_score"].values)
-            if not np.isnan(r):
-                model_corrs.append(r)
-        mean_r = _fisher_z_mean(model_corrs) if model_corrs else float("nan")
-        rows_per_model.append(
-            dict(
-                metric=col,
-                spearman_r=mean_r,
-                spearman_p=float("nan"),
-                pearson_r=float("nan"),
-                pearson_p=float("nan"),
-                n_models=len(model_corrs),
-            )
-        )
-
-        # per_dataset (one correlation per MTEB task / dataset name)
-        for task_name, grp in sub.groupby("task_name"):
-            tt = grp["task_type"].iloc[0]
-            s_r, s_p, p_r, p_p = _safe_corr(grp[col].values, grp["mteb_score"].values)
-            rows_per_dataset.append(
-                dict(
-                    metric=col,
-                    task_name=task_name,
-                    dataset=task_name,
-                    task_type=tt,
-                    spearman_r=s_r,
-                    spearman_p=s_p,
-                    pearson_r=p_r,
-                    pearson_p=p_p,
-                    n=len(grp),
-                )
-            )
-
-        # per_task_type pooled (all configs in that type together)
-        for task_type, grp in sub.groupby("task_type"):
-            s_r, s_p, p_r, p_p = _safe_corr(grp[col].values, grp["mteb_score"].values)
-            rows_per_tt_pooled.append(
-                dict(
-                    metric=col,
-                    task_type=task_type,
-                    spearman_r=s_r,
-                    spearman_p=s_p,
-                    pearson_r=p_r,
-                    pearson_p=p_p,
-                    n=len(grp),
-                )
-            )
-
-    per_ds_df = pd.DataFrame(rows_per_dataset)
-    rows_tt_fisher: List[dict] = []
-    if len(per_ds_df):
-        for (metric, task_type), grp in per_ds_df.groupby(["metric", "task_type"]):
-            corrs = [float(x) for x in grp["spearman_r"].values if not np.isnan(x)]
-            mean_r = _fisher_z_mean(corrs) if corrs else float("nan")
-            rows_tt_fisher.append(
-                dict(
-                    metric=metric,
-                    task_type=task_type,
-                    spearman_r=mean_r,
-                    n_datasets=len(corrs),
-                )
-            )
-
-    return {
-        "all": pd.DataFrame(rows_all),
-        "per_task": pd.DataFrame(rows_per_task),
-        "per_model": pd.DataFrame(rows_per_model),
-        "per_dataset": per_ds_df,
-        "per_task_type_pooled": pd.DataFrame(rows_per_tt_pooled),
-        "per_task_type_fisher_mean": pd.DataFrame(rows_tt_fisher),
-    }
+    mcols = metric_columns(df)
+    df_valid = ensure_task_type(df.dropna(subset=["mteb_score"]).copy())
+    df_valid["mteb_score"] = pd.to_numeric(df_valid["mteb_score"], errors="coerce")
+    return build_correlation_views_vs_target(
+        df_valid, mcols, "mteb_score", per_model_col="model_name"
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════ #
@@ -284,14 +119,20 @@ def compute_selection_quality(
 
     Retrieval variants (_corpus, _queries, _combined) are separate metric columns.
     """
-    metric_cols = _metric_columns(df)
-    df_valid = _ensure_task_type(df.dropna(subset=["mteb_score"]).copy())
+    mcols = metric_columns(df)
+    df_valid = ensure_task_type(df.dropna(subset=["mteb_score"]).copy())
     df_valid["mteb_score"] = df_valid["mteb_score"].astype(float)
 
     rows = []
-    for col in metric_cols:
+    for col in mcols:
         sub = df_valid.dropna(subset=[col]).copy()
-        signs = _estimate_sign(sub, col, scope=sign_estimation)
+        signs = estimate_sign(
+            sub,
+            col,
+            "mteb_score",
+            scope=sign_estimation,
+            group_cols=("task_name", "model_name"),
+        )
         sub = sub.copy()
         sub["_sign"] = signs.values if len(signs) == len(sub) else 1
 
@@ -334,44 +175,6 @@ def compute_selection_quality(
 # ══════════════════════════════════════════════════════════════════════════ #
 #  3. Metric summary                                                         #
 # ══════════════════════════════════════════════════════════════════════════ #
-
-def compute_summary(sq: pd.DataFrame) -> pd.DataFrame:
-    rows = []
-    for metric, grp in sq.groupby("metric"):
-        rows.append(
-            dict(
-                metric=metric,
-                mean_gap=grp["gap"].mean(),
-                median_gap=grp["gap"].median(),
-                mean_selected_rank=grp["selected_rank"].mean(),
-                top1_accuracy=float((grp["selected_rank"] == 1).mean()),
-                top3_accuracy=float((grp["selected_rank"] <= 3).mean()),
-                n_groups=len(grp),
-            )
-        )
-    return pd.DataFrame(rows).sort_values("mean_gap")
-
-
-def compute_summary_grouped(sq: pd.DataFrame, group_col: str) -> pd.DataFrame:
-    """Aggregate selection metrics per (metric, group_col) e.g. task_type or task_name."""
-    if group_col not in sq.columns:
-        return pd.DataFrame()
-    rows = []
-    for (metric, gval), grp in sq.groupby(["metric", group_col]):
-        row = dict(
-            metric=metric,
-            mean_gap=grp["gap"].mean(),
-            median_gap=grp["gap"].median(),
-            mean_selected_rank=grp["selected_rank"].mean(),
-            top1_accuracy=float((grp["selected_rank"] == 1).mean()),
-            top3_accuracy=float((grp["selected_rank"] <= 3).mean()),
-            n_groups=len(grp),
-        )
-        row[group_col] = gval
-        rows.append(row)
-    sort_keys = [group_col, "mean_gap"]
-    return pd.DataFrame(rows).sort_values(sort_keys)
-
 
 def write_correlation_bundle(views: Dict[str, pd.DataFrame], corr_dir: Path) -> None:
     corr_dir.mkdir(parents=True, exist_ok=True)
@@ -443,7 +246,7 @@ def main():
     logger.info(f"  {len(df)} rows, {len(df.columns)} columns")
 
     df["mteb_score"] = pd.to_numeric(df["mteb_score"], errors="coerce")
-    metric_cols = _metric_columns(df)
+    metric_cols = metric_columns(df)
     for col in metric_cols:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     logger.info(f"  {len(metric_cols)} metric columns found")
