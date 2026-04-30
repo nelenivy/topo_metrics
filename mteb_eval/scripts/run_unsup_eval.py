@@ -87,6 +87,10 @@ from src.task_sets import TASK_SET_MAP, FULL_BENCHMARK_NAME
 from src.model_sets import MODEL_SET_MAP
 from src.pooling_rules import pooling_supported, skip_reason
 from src.unsup_metrics import (
+    DEFAULT_LOCAL_COV_DEVICE,
+    DEFAULT_LOCAL_COV_INVARIANT_MAX_ORDER,
+    DEFAULT_LOCAL_COV_N_NEIGHBORS,
+    DEFAULT_LOCAL_COV_TRANSFORMS,
     compute_metrics,
     compute_metrics_retrieval,
     suffix_metrics,
@@ -304,8 +308,23 @@ def _csv_value_present(value: Any) -> bool:
 
 def _metric_layout(metric_kwargs: Dict[str, Any]) -> Dict[str, List[str]]:
     return metric_output_map(
+        selected_metrics=metric_kwargs.get("selected_metrics"),
         include_ph_dim=bool(metric_kwargs.get("include_ph_dim", False)),
         ripser_maxdim=int(metric_kwargs.get("ripser_maxdim", 1)),
+        local_cov_n_neighbors=metric_kwargs.get(
+            "local_cov_n_neighbors",
+            DEFAULT_LOCAL_COV_N_NEIGHBORS,
+        ),
+        local_cov_invariant_max_order=int(
+            metric_kwargs.get(
+                "local_cov_invariant_max_order",
+                DEFAULT_LOCAL_COV_INVARIANT_MAX_ORDER,
+            )
+        ),
+        local_cov_transforms=metric_kwargs.get(
+            "local_cov_transforms",
+            DEFAULT_LOCAL_COV_TRANSFORMS,
+        ),
     )
 
 
@@ -361,8 +380,12 @@ def _plan_metric_refresh(
     if not has_error and has_mteb and (not row_hash or row_hash == current_hash) and not missing_bases:
         return None
 
-    if has_error or (row_hash and row_hash != current_hash):
+    if has_error:
         selected_metrics: Optional[List[str]] = None
+    elif row_hash and row_hash != current_hash and missing_bases:
+        selected_metrics = missing_bases
+    elif row_hash and row_hash != current_hash:
+        selected_metrics = None
     else:
         selected_metrics = missing_bases
 
@@ -1269,9 +1292,9 @@ def _layer_spec_worker_error_row(
 
 
 def _layer_spec_worker(
-    item: Tuple[int, str, Optional[Dict[str, Any]], Optional[List[str]], bool]
+    item: Tuple[int, str, Optional[Dict[str, Any]], Optional[List[str]], bool, bool]
 ) -> Dict[str, Any]:
-    si, spec_name, existing_row, selected_metrics, run_mteb = item
+    si, spec_name, existing_row, selected_metrics, run_mteb, _row_exists = item
     ctx = _LAYER_SPEC_WORKER_CTX
     if ctx is None:
         print("WORKER ERROR: context missing for", spec_name, flush=True)
@@ -1644,6 +1667,15 @@ def evaluate_model_task_pooling(
             "using CPU for dense retrieval scores (use --layer-spec-workers 1 for GPU).",
         )
         mteb_proxy_device = "cpu"
+    worker_metric_kwargs = dict(metric_kwargs)
+    local_cov_device = str(worker_metric_kwargs.get("local_cov_device", "")).lower()
+    if nw > 1 and local_cov_device.startswith("cuda"):
+        logger.warning(
+            "local_cov_spectrum: CUDA disabled with --layer-spec-workers > 1 because "
+            "forked subprocesses cannot re-initialize CUDA; using CPU for local covariance "
+            "metrics (use --layer-spec-workers 1 for CUDA)."
+        )
+        worker_metric_kwargs["local_cov_device"] = "cpu"
 
     def _flush_layer_row(
         si: int, row: Dict[str, Any], *, silent_progress: bool = False
@@ -1749,7 +1781,7 @@ def evaluate_model_task_pooling(
         "query_texts": query_texts,
         "corpus_texts": corpus_texts,
         "all_texts": all_texts,
-        "metric_kwargs": metric_kwargs,
+        "metric_kwargs": worker_metric_kwargs,
         "output_dir": output_dir,
         "batch_size": batch_size,
         "progress_enabled": progress is not None,
@@ -1836,11 +1868,16 @@ def run_evaluation(args) -> None:
     result_store = ResultStore(os.path.join(args.output_dir, "master_results.csv"))
 
     metric_kwargs = dict(
+        selected_metrics=args.metrics,
         n_samples=args.n_samples,
         sample_fraction=args.sample_fraction,
         min_sample_size=args.min_sample_size,
         include_ph_dim=args.include_ph_dim,
         ripser_maxdim=args.ripser_maxdim,
+        local_cov_n_neighbors=args.local_cov_n_neighbors,
+        local_cov_invariant_max_order=args.local_cov_invariant_max_order,
+        local_cov_transforms=args.local_cov_transforms,
+        local_cov_device=args.local_cov_device,
     )
 
     eval_torch_dtype = _normalize_torch_dtype_str(getattr(args, "torch_dtype", None))
@@ -2250,8 +2287,55 @@ def main():
         help="Bootstrap draws for unsupervised topology/spectral metrics (per variant); "
         "was 10 historically, default 1 is faster.",
     )
+    parser.add_argument(
+        "--metrics",
+        nargs="+",
+        default=None,
+        help=(
+            "Optional unsupervised metric base names to compute/refresh "
+            "(e.g. local_cov_spectrum). Default: all registered metrics."
+        ),
+    )
     parser.add_argument("--sample-fraction",  type=float, default=1/20)
     parser.add_argument("--min-sample-size",  type=int,   default=100)
+    parser.add_argument(
+        "--local-cov-n-neighbors",
+        type=int,
+        nargs="+",
+        default=list(DEFAULT_LOCAL_COV_N_NEIGHBORS),
+        metavar="K",
+        help=(
+            "One or more kNN neighborhood sizes for local covariance spectrum metrics. "
+            "Multiple values emit k-tagged columns such as metric_local_cov_spectrum_k50_..."
+        ),
+    )
+    parser.add_argument(
+        "--local-cov-invariant-max-order",
+        type=int,
+        default=DEFAULT_LOCAL_COV_INVARIANT_MAX_ORDER,
+        metavar="L",
+        help="Max elementary symmetric invariant order for local covariance spectrum metrics.",
+    )
+    parser.add_argument(
+        "--local-cov-transforms",
+        nargs="+",
+        default=list(DEFAULT_LOCAL_COV_TRANSFORMS),
+        metavar="NAME",
+        help=(
+            "Local covariance transform groups to compute. Valid values: "
+            "rankme, ne_sum, participation_ratio, invariants, all. "
+            "Use 'ne_sum participation_ratio invariants' for the fast no-RankMe variant."
+        ),
+    )
+    parser.add_argument(
+        "--local-cov-device",
+        default=DEFAULT_LOCAL_COV_DEVICE,
+        metavar="DEVICE",
+        help=(
+            "Device for local covariance spectrum metrics. Use cuda or cuda:N "
+            "to compute pairwise distances, kNN, covariances, and eigvalsh in torch."
+        ),
+    )
     parser.add_argument("--include-ph-dim",   action="store_true")
     parser.add_argument("--batch-size",       type=int,   default=32)
     parser.add_argument(
@@ -2367,6 +2451,10 @@ def main():
     args = parser.parse_args()
     if args.layer_spec_workers < 1:
         parser.error("--layer-spec-workers must be at least 1")
+    if any(k < 2 for k in args.local_cov_n_neighbors):
+        parser.error("--local-cov-n-neighbors values must be at least 2")
+    if args.local_cov_invariant_max_order < 0:
+        parser.error("--local-cov-invariant-max-order must be non-negative")
     args.trust_remote_code = not args.no_trust_remote_code
     args.progress_bar = not args.no_progress_bar
     if not args.models:

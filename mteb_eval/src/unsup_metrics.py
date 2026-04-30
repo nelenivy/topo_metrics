@@ -19,13 +19,24 @@ from functools import lru_cache
 from time import perf_counter
 from collections import defaultdict
 from pathlib import Path
-from typing import Callable, List, Optional, Dict, Tuple
+from typing import Callable, List, Optional, Dict, Sequence, Tuple
 
 import numpy as np
 import torch
 from scipy.cluster.hierarchy import linkage
 from scipy.spatial.distance import pdist, squareform
 from sklearn.utils import resample
+
+from src.local_cov_metrics import (
+    DEFAULT_LOCAL_COV_DEVICE,
+    DEFAULT_LOCAL_COV_INVARIANT_MAX_ORDER,
+    DEFAULT_LOCAL_COV_N_NEIGHBORS,
+    DEFAULT_LOCAL_COV_TRANSFORMS,
+    local_mle_cov_mst_metric,
+    local_mle_cov_mst_output_names,
+    local_cov_spectrum_metric,
+    local_cov_spectrum_output_names,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -369,6 +380,10 @@ def _intrinsic_dim_local_fast(sample, u=None, s=None) -> Dict[str, float]:
 def _available_metric_functions(
     include_ph_dim: bool = False,
     ripser_maxdim: int = 1,
+    local_cov_n_neighbors: int | Sequence[int] | str = DEFAULT_LOCAL_COV_N_NEIGHBORS,
+    local_cov_invariant_max_order: int = DEFAULT_LOCAL_COV_INVARIANT_MAX_ORDER,
+    local_cov_transforms: Sequence[str] | str | None = DEFAULT_LOCAL_COV_TRANSFORMS,
+    local_cov_device: str = DEFAULT_LOCAL_COV_DEVICE,
 ) -> Dict[str, Callable]:
     """Return the ordered metric registry used by ``compute_metrics``."""
     (
@@ -384,6 +399,27 @@ def _available_metric_functions(
     def _ripser_wrapped(sample, u=None, s=None):
         return ripser_metric(sample, u=u, s=s, maxdim=ripser_maxdim)
 
+    def _local_cov_spectrum_wrapped(sample, u=None, s=None):
+        return local_cov_spectrum_metric(
+            sample,
+            u=u,
+            s=s,
+            n_neighbors=local_cov_n_neighbors,
+            invariant_max_order=local_cov_invariant_max_order,
+            transforms=local_cov_transforms,
+            device=local_cov_device,
+        )
+
+    def _local_mle_cov_mst_wrapped(sample, u=None, s=None):
+        return local_mle_cov_mst_metric(
+            sample,
+            u=u,
+            s=s,
+            n_neighbors=local_cov_n_neighbors,
+            invariant_max_order=local_cov_invariant_max_order,
+            device=local_cov_device,
+        )
+
     metrics: Dict[str, Callable] = {
         "rankme": rankme,
         "coherence": coherence,
@@ -394,6 +430,8 @@ def _available_metric_functions(
         "self_clustering": self_clustering,
         "intrinsic_dim_global_fast": _intrinsic_dim_global_fast,
         "intrinsic_dim_local_fast": _intrinsic_dim_local_fast,
+        "local_cov_spectrum": _local_cov_spectrum_wrapped,
+        "local_mle_cov_mst": _local_mle_cov_mst_wrapped,
         "ripser": _ripser_wrapped,
     }
     if include_ph_dim:
@@ -438,6 +476,9 @@ def metric_output_map(
     selected_metrics: Optional[List[str]] = None,
     include_ph_dim: bool = False,
     ripser_maxdim: int = 1,
+    local_cov_n_neighbors: int | Sequence[int] | str = DEFAULT_LOCAL_COV_N_NEIGHBORS,
+    local_cov_invariant_max_order: int = DEFAULT_LOCAL_COV_INVARIANT_MAX_ORDER,
+    local_cov_transforms: Sequence[str] | str | None = DEFAULT_LOCAL_COV_TRANSFORMS,
 ) -> Dict[str, List[str]]:
     """Map each selected metric name to the flattened output keys it produces.
 
@@ -445,7 +486,12 @@ def metric_output_map(
     used by the evaluation script to decide whether a cached row is stale.
     """
     available = _available_metric_functions(
-        include_ph_dim=include_ph_dim, ripser_maxdim=ripser_maxdim
+        include_ph_dim=include_ph_dim,
+        ripser_maxdim=ripser_maxdim,
+        local_cov_n_neighbors=local_cov_n_neighbors,
+        local_cov_invariant_max_order=local_cov_invariant_max_order,
+        local_cov_transforms=local_cov_transforms,
+        local_cov_device=DEFAULT_LOCAL_COV_DEVICE,
     )
     chosen = (
         list(available.keys())
@@ -460,6 +506,21 @@ def metric_output_map(
             out[metric_name] = list(_FAST_INTRINSIC_DIM_GLOBAL_OUTPUT_NAMES)
         elif metric_name == "intrinsic_dim_local_fast":
             out[metric_name] = list(_FAST_INTRINSIC_DIM_LOCAL_OUTPUT_NAMES)
+        elif metric_name == "local_cov_spectrum":
+            out[metric_name] = list(
+                local_cov_spectrum_output_names(
+                    local_cov_invariant_max_order,
+                    local_cov_n_neighbors,
+                    local_cov_transforms,
+                )
+            )
+        elif metric_name == "local_mle_cov_mst":
+            out[metric_name] = list(
+                local_mle_cov_mst_output_names(
+                    local_cov_invariant_max_order,
+                    local_cov_n_neighbors,
+                )
+            )
         else:
             out[metric_name] = [metric_name]
     return out
@@ -469,6 +530,9 @@ def expected_metric_columns(
     selected_metrics: Optional[List[str]] = None,
     include_ph_dim: bool = False,
     ripser_maxdim: int = 1,
+    local_cov_n_neighbors: int | Sequence[int] | str = DEFAULT_LOCAL_COV_N_NEIGHBORS,
+    local_cov_invariant_max_order: int = DEFAULT_LOCAL_COV_INVARIANT_MAX_ORDER,
+    local_cov_transforms: Sequence[str] | str | None = DEFAULT_LOCAL_COV_TRANSFORMS,
     retrieval: bool = False,
 ) -> List[str]:
     """Return the CSV columns that ``compute_metrics`` would emit."""
@@ -477,6 +541,9 @@ def expected_metric_columns(
         selected_metrics=selected_metrics,
         include_ph_dim=include_ph_dim,
         ripser_maxdim=ripser_maxdim,
+        local_cov_n_neighbors=local_cov_n_neighbors,
+        local_cov_invariant_max_order=local_cov_invariant_max_order,
+        local_cov_transforms=local_cov_transforms,
     ).values():
         cols.extend([f"metric_{name}" for name in output_names])
         cols.extend([f"std_{name}" for name in output_names])
@@ -560,6 +627,10 @@ def compute_metrics(
     min_sample_size: int = 100,
     include_ph_dim: bool = False,
     ripser_maxdim: int = 1,
+    local_cov_n_neighbors: int | Sequence[int] | str = DEFAULT_LOCAL_COV_N_NEIGHBORS,
+    local_cov_invariant_max_order: int = DEFAULT_LOCAL_COV_INVARIANT_MAX_ORDER,
+    local_cov_transforms: Sequence[str] | str | None = DEFAULT_LOCAL_COV_TRANSFORMS,
+    local_cov_device: str = DEFAULT_LOCAL_COV_DEVICE,
     verbose: bool = False,
 ) -> Dict[str, float]:
     """
@@ -574,6 +645,10 @@ def compute_metrics(
     min_sample_size : lower bound on subsample size (adaptive floor)
     include_ph_dim : also compute persistent-homology dimension (slow)
     ripser_maxdim : max homology dimension for Ripser (0 = H0 only, faster; 1 = H0+H1)
+    local_cov_n_neighbors : kNN size(s) for local covariance spectrum metrics
+    local_cov_invariant_max_order : max elementary symmetric invariant order
+    local_cov_transforms : local covariance transform groups to emit
+    local_cov_device : device for local covariance eigenspectrum computation
     verbose : print per-metric values
 
     Returns
@@ -589,7 +664,12 @@ def compute_metrics(
     sample_size = min(sample_size, N)
 
     available_metrics = _available_metric_functions(
-        include_ph_dim=include_ph_dim, ripser_maxdim=ripser_maxdim
+        include_ph_dim=include_ph_dim,
+        ripser_maxdim=ripser_maxdim,
+        local_cov_n_neighbors=local_cov_n_neighbors,
+        local_cov_invariant_max_order=local_cov_invariant_max_order,
+        local_cov_transforms=local_cov_transforms,
+        local_cov_device=local_cov_device,
     )
 
     if selected_metrics is None:
